@@ -4,7 +4,7 @@ options:
   deploymentTarget:
     iOS: '26.0'
 packages:
-  Llama:
+  llama.swift:
     url: https://github.com/mattt/llama.swift
     exactVersion: 2.8611.0
 settings:
@@ -34,8 +34,8 @@ targets:
       - path: Resources
         buildPhase: resources
     dependencies:
-      - package: Llama
-        product: Llama
+      - package: llama.swift
+        product: LlamaSwift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.nightvibes.openclaudemobile

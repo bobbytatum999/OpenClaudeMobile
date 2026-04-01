@@ -1,5 +1,5 @@
 import Foundation
-import Llama
+import LlamaSwift
 
 final class LocalModelEngine: @unchecked Sendable {
     enum EngineError: LocalizedError {
