@@ -89,7 +89,7 @@ final class LocalModelEngine: @unchecked Sendable {
     }
 
     private func _generateUnsafe(prompt: String, maxTokens: Int, onToken: (String) -> Void) throws {
-        guard let model, let context, let vocab else { throw EngineError.noModelSelected }
+        guard model != nil, let context, let vocab else { throw EngineError.noModelSelected }
 
         let utf8Count = prompt.utf8.count
         var promptTokens = [llama_token](repeating: 0, count: max(utf8Count + 16, 64))

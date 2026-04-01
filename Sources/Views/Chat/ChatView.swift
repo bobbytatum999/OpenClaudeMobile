@@ -62,7 +62,13 @@ struct ChatView: View {
                             .lineLimit(1)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 10)
-                            .background(session.id == model.selectedSessionID ? .tint.opacity(0.18) : .thinMaterial, in: Capsule())
+                            .background {
+                                if session.id == model.selectedSessionID {
+                                    Capsule().fill(.tint.opacity(0.18))
+                                } else {
+                                    Capsule().fill(.thinMaterial)
+                                }
+                            }
                     }
                     .buttonStyle(.plain)
                     .contextMenu {

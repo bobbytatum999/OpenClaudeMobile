@@ -221,9 +221,11 @@ final class AppModel: ObservableObject {
     }
 
     func stopServer() {
-        server.stop()
-        isServerRunning = false
-        statusLine = "Server stopped"
+        Task {
+            await server.stop()
+            isServerRunning = false
+            statusLine = "Server stopped"
+        }
     }
 
     func apiModelInventory() -> [[String: String]] {

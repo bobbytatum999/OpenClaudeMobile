@@ -25,58 +25,74 @@ struct ModelsView: View {
     private var searchCard: some View {
         GlassCard {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Hugging Face GGUF Browser")
-                    .font(.title3.weight(.semibold))
-                TextField("Search models", text: $model.searchQuery)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .padding(12)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                HStack {
-                    Button {
-                        Task { await model.searchHuggingFace() }
-                    } label: {
-                        if model.isSearchingModels {
-                            ProgressView()
-                        } else {
-                            Label("Search", systemImage: "magnifyingglass")
-                        }
+                searchHeader
+                searchResults
+            }
+        }
+    }
+
+    private var searchHeader: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Hugging Face GGUF Browser")
+                .font(.title3.weight(.semibold))
+            TextField("Search models", text: $model.searchQuery)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .padding(12)
+                .background { RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.regularMaterial) }
+            HStack {
+                Button {
+                    Task { await model.searchHuggingFace() }
+                } label: {
+                    if model.isSearchingModels {
+                        ProgressView()
+                    } else {
+                        Label("Search", systemImage: "magnifyingglass")
                     }
-                    .buttonStyle(.borderedProminent)
-                    Spacer()
-                    Text("\(model.searchedModels.count) result(s)")
+                }
+                .buttonStyle(.borderedProminent)
+                Spacer()
+                Text("\(model.searchedModels.count) result(s)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var searchResults: some View {
+        ForEach(model.searchedModels.prefix(8)) { item in
+            Button {
+                model.selectedModelDetails = item
+            } label: {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(item.id)
+                            .font(.headline)
+                            .multilineTextAlignment(.leading)
+                        HStack(spacing: 10) {
+                            if let tag = item.pipelineTag {
+                                Label(tag, systemImage: "tag.fill")
+                            }
+                            if let downloads = item.downloads {
+                                Label("\(downloads)", systemImage: "arrow.down.circle")
+                            }
+                            Text("GGUF \(item.ggufFiles.count)")
+                        }
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                }
-                ForEach(model.searchedModels.prefix(8)) { item in
-                    Button {
-                        model.selectedModelDetails = item
-                    } label: {
-                        HStack(alignment: .top) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(item.id)
-                                    .font(.headline)
-                                    .multilineTextAlignment(.leading)
-                                HStack(spacing: 10) {
-                                    if let tag = item.pipelineTag {
-                                        Label(tag, systemImage: "tag.fill")
-                                    }
-                                    if let downloads = item.downloads {
-                                        Label("\(downloads)", systemImage: "arrow.down.circle")
-                                    }
-                                    Text("GGUF \(item.ggufFiles.count)")
-                                }
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                        }
-                        .padding(14)
-                        .background(model.selectedModelDetails?.id == item.id ? .tint.opacity(0.16) : .regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                     }
-                    .buttonStyle(.plain)
+                    Spacer()
+                }
+                .padding(14)
+                .background {
+                    if model.selectedModelDetails?.id == item.id {
+                        RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.tint.opacity(0.16))
+                    } else {
+                        RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.regularMaterial)
+                    }
                 }
             }
+            .buttonStyle(.plain)
         }
     }
 

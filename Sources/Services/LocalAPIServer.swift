@@ -126,11 +126,12 @@ actor LocalAPIServer {
                     connection.cancel()
                 } else {
                     let text = try await appModel?.completeFromAPI(messages: decoded.messages, model: decoded.model, temperature: decoded.temperature, maxTokens: decoded.max_tokens) ?? ""
+                    let currentId = await appModel?.currentModelIdentifier() ?? "unknown"
                     let response = OpenAICompatibleChatResponse(
                         id: UUID().uuidString,
                         object: "chat.completion",
                         created: Int(Date().timeIntervalSince1970),
-                        model: decoded.model ?? (await appModel?.currentModelIdentifier() ?? "unknown"),
+                        model: decoded.model ?? currentId,
                         choices: [
                             OpenAICompatibleChatChoice(
                                 index: 0,
@@ -164,7 +165,7 @@ actor LocalAPIServer {
     }
 
     private func sendRaw(_ data: Data, on connection: NWConnection) async throws {
-        try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             connection.send(content: data, completion: .contentProcessed { error in
                 if let error {
                     continuation.resume(throwing: error)
