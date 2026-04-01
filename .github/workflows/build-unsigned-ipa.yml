@@ -26,6 +26,11 @@ jobs:
       - name: Generate project
         run: xcodegen generate
 
+      - name: Inspect project structure
+        run: |
+          xcodebuild -list -project OpenClaudeMobile.xcodeproj
+          xcodebuild -showBuildSettings -project OpenClaudeMobile.xcodeproj -scheme OpenClaudeMobile
+
       - name: Resolve package dependencies
         run: |
           xcodebuild -resolvePackageDependencies \
@@ -37,6 +42,7 @@ jobs:
           xcodebuild archive \
             -project OpenClaudeMobile.xcodeproj \
             -scheme OpenClaudeMobile \
+            -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -archivePath build/OpenClaudeMobile.xcarchive \
             CODE_SIGNING_ALLOWED=NO \

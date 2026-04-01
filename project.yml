@@ -4,7 +4,7 @@ options:
   deploymentTarget:
     iOS: '26.0'
 packages:
-  llama.swift:
+  Llama:
     url: https://github.com/mattt/llama.swift
     exactVersion: 2.8611.0
 settings:
@@ -23,6 +23,8 @@ settings:
     ENABLE_PREVIEWS: YES
     SWIFT_STRICT_CONCURRENCY: complete
     CLANG_ENABLE_MODULES: YES
+    LIBRARY_SEARCH_PATHS:
+      - $(inherited)
 targets:
   OpenClaudeMobile:
     type: application
@@ -32,7 +34,7 @@ targets:
       - path: Resources
         buildPhase: resources
     dependencies:
-      - package: llama.swift
+      - package: Llama
         product: Llama
     settings:
       base:
