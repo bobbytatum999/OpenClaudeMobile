@@ -4,17 +4,17 @@ options:
   deploymentTarget:
     iOS: '26.0'
 packages:
-  Llama:
+  llama.swift:
     url: https://github.com/mattt/llama.swift
-    exactVersion: 2.8279.0
+    exactVersion: 2.8611.0
 settings:
   base:
     PRODUCT_NAME: OpenClaudeMobile
-    SWIFT_VERSION: 6.0
-    IPHONEOS_DEPLOYMENT_TARGET: 26.0
-    TARGETED_DEVICE_FAMILY: 1
-    CURRENT_PROJECT_VERSION: 1
-    MARKETING_VERSION: 1.0.0
+    SWIFT_VERSION: '6.0'
+    IPHONEOS_DEPLOYMENT_TARGET: '26.0'
+    TARGETED_DEVICE_FAMILY: '1'
+    CURRENT_PROJECT_VERSION: '1'
+    MARKETING_VERSION: '1.0.0'
     GENERATE_INFOPLIST_FILE: YES
     DEVELOPMENT_TEAM: ''
     CODE_SIGN_STYLE: Automatic
@@ -32,7 +32,7 @@ targets:
       - path: Resources
         buildPhase: resources
     dependencies:
-      - package: Llama
+      - package: llama.swift
         product: Llama
     settings:
       base:
@@ -70,3 +70,10 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.nightvibes.openclaudemobile.tests
         GENERATE_INFOPLIST_FILE: YES
+schemes:
+  OpenClaudeMobile:
+    build:
+      targets:
+        OpenClaudeMobile: [run, test, profile, analyze, archive]
+    archive:
+      config: Release

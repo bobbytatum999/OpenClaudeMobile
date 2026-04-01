@@ -21,18 +21,30 @@ jobs:
           xcodebuild -version
 
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: brew install xcodegen && xcodegen --version
 
       - name: Generate project
         run: xcodegen generate
 
       - name: Resolve package dependencies
         run: |
-          xcodebuild -resolvePackageDependencies             -project OpenClaudeMobile.xcodeproj             -scheme OpenClaudeMobile
+          xcodebuild -resolvePackageDependencies \
+            -project OpenClaudeMobile.xcodeproj \
+            -scheme OpenClaudeMobile
 
       - name: Archive unsigned iPhone build
         run: |
-          xcodebuild archive             -project OpenClaudeMobile.xcodeproj             -scheme OpenClaudeMobile             -destination 'generic/platform=iOS'             -archivePath build/OpenClaudeMobile.xcarchive             CODE_SIGNING_ALLOWED=NO             CODE_SIGNING_REQUIRED=NO             CODE_SIGN_IDENTITY=''             ONLY_ACTIVE_ARCH=NO
+          xcodebuild archive \
+            -project OpenClaudeMobile.xcodeproj \
+            -scheme OpenClaudeMobile \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/OpenClaudeMobile.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            ONLY_ACTIVE_ARCH=NO \
+            -allowProvisioningUpdates \
+            clean
 
       - name: Package unsigned IPA
         run: |
