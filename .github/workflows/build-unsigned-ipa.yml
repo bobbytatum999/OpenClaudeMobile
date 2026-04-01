@@ -1,0 +1,51 @@
+name: Build Unsigned iPhone IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-26
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.0.app || sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Resolve package dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies             -project OpenClaudeMobile.xcodeproj             -scheme OpenClaudeMobile
+
+      - name: Archive unsigned iPhone build
+        run: |
+          xcodebuild archive             -project OpenClaudeMobile.xcodeproj             -scheme OpenClaudeMobile             -destination 'generic/platform=iOS'             -archivePath build/OpenClaudeMobile.xcarchive             CODE_SIGNING_ALLOWED=NO             CODE_SIGNING_REQUIRED=NO             CODE_SIGN_IDENTITY=''             ONLY_ACTIVE_ARCH=NO
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p build/Payload
+          app_path="build/OpenClaudeMobile.xcarchive/Products/Applications/OpenClaudeMobile.app"
+          cp -R "$app_path" build/Payload/
+          cd build
+          /usr/bin/zip -qry OpenClaudeMobile-unsigned.ipa Payload
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenClaudeMobile-unsigned
+          path: |
+            build/OpenClaudeMobile.xcarchive
+            build/OpenClaudeMobile-unsigned.ipa
