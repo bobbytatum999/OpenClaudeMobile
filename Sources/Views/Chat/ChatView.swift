@@ -4,71 +4,85 @@ struct ChatView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        VStack(spacing: 16) {
-            header
-            sessionPicker
-            messageList
-            composer
+        ZStack {
+            Color(uiColor: .systemGroupedBackground).ignoresSafeArea()
+            
+            VStack(spacing: 0) {
+                header
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+                    .padding(.bottom, 12)
+                
+                sessionPicker
+                    .padding(.bottom, 8)
+                
+                messageList
+                
+                composer
+            }
         }
-        .padding()
         .navigationTitle("OpenClaude")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     model.newSession()
                 } label: {
-                    Image(systemName: "square.and.pencil")
+                    Image(systemName: "square.and.pencil.circle.fill")
+                        .symbolRenderingMode(.hierarchical)
+                        .font(.title2)
+                        .foregroundStyle(.tint)
                 }
             }
         }
     }
 
     private var header: some View {
-        GlassCard {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Runtime")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Text(model.settings.selectedRuntime == .local ? (model.selectedLocalModel?.displayName ?? "No local model selected") : model.settings.remote.model)
-                        .font(.headline)
-                    Text(model.settings.selectedRuntime == .local ? "On-device GGUF inference" : "OpenAI-compatible remote provider")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Picker("Runtime", selection: $model.settings.selectedRuntime) {
-                    ForEach(RuntimeSelection.allCases) { runtime in
-                        Text(runtime.title).tag(runtime)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 180)
-                .onChange(of: model.settings.selectedRuntime) {
-                    model.saveSettings()
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.settings.selectedRuntime == .local ? (model.selectedLocalModel?.displayName ?? "No local model") : model.settings.remote.model)
+                    .font(.system(.headline, design: .rounded))
+                Text(model.settings.selectedRuntime == .local ? "On-device Inference" : "Remote Provider")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Picker("Runtime", selection: $model.settings.selectedRuntime) {
+                ForEach(RuntimeSelection.allCases) { runtime in
+                    Text(runtime.title).tag(runtime)
                 }
             }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 160)
+            .onChange(of: model.settings.selectedRuntime) {
+                model.saveSettings()
+            }
         }
+        .padding(14)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .shadow(color: .black.opacity(0.04), radius: 6, x: 0, y: 2)
     }
 
     private var sessionPicker: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 ForEach(model.sessions) { session in
                     Button {
                         model.selectedSessionID = session.id
                     } label: {
                         Text(session.title)
                             .lineLimit(1)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
+                            .font(.subheadline.weight(session.id == model.selectedSessionID ? .semibold : .regular))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
                             .background {
                                 if session.id == model.selectedSessionID {
-                                    Capsule().fill(.tint.opacity(0.18))
+                                    Capsule().fill(Color.accentColor.opacity(0.15))
                                 } else {
-                                    Capsule().fill(.thinMaterial)
+                                    Capsule().fill(.regularMaterial)
                                 }
                             }
+                            .foregroundColor(session.id == model.selectedSessionID ? .accentColor : .primary)
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
@@ -80,23 +94,38 @@ struct ChatView: View {
                     }
                 }
             }
+            .padding(.horizontal)
         }
     }
 
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 12) {
-                    ForEach(model.selectedSession?.messages ?? []) { message in
-                        MessageBubble(message: message)
-                            .id(message.id)
+                LazyVStack(spacing: 16) {
+                    let messages = model.selectedSession?.messages ?? []
+                    if messages.isEmpty {
+                        VStack(spacing: 16) {
+                            Image(systemName: "message.and.waveform.fill")
+                                .font(.system(size: 48))
+                                .foregroundStyle(.tertiary)
+                            Text("Start a conversation")
+                                .font(.headline)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.top, 100)
+                    } else {
+                        ForEach(messages) { message in
+                            MessageBubble(message: message)
+                                .id(message.id)
+                        }
                     }
                 }
+                .padding(.bottom, 20)
             }
-            .background(.clear)
-            .onChange(of: model.selectedSession?.messages.count ?? 0) {
+            .background(Color.clear)
+            .onChange(of: model.selectedSession?.updatedAt) {
                 if let last = model.selectedSession?.messages.last?.id {
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.9)) {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
                         proxy.scrollTo(last, anchor: .bottom)
                     }
                 }
@@ -105,43 +134,62 @@ struct ChatView: View {
     }
 
     private var composer: some View {
-        GlassCard {
-            VStack(alignment: .leading, spacing: 12) {
-                if !selectedDocuments.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack {
-                            ForEach(selectedDocuments) { document in
-                                Label(document.filename, systemImage: "doc.text")
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 8)
-                                    .background(.regularMaterial, in: Capsule())
-                            }
+        VStack(spacing: 8) {
+            if !selectedDocuments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack {
+                        ForEach(selectedDocuments) { document in
+                            Label(document.filename, systemImage: "doc.text.fill")
+                                .font(.caption.weight(.medium))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Color.blue.opacity(0.1), in: Capsule())
+                                .foregroundColor(.blue)
                         }
                     }
+                    .padding(.horizontal)
                 }
-                TextEditor(text: $model.composingText)
-                    .frame(minHeight: 110)
-                    .scrollContentBackground(.hidden)
-                    .background(.clear)
-                HStack {
-                    Text(model.settings.selectedRuntime == .local ? "Local model will receive a rendered conversation prompt." : "Remote provider will receive OpenAI-compatible chat messages.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button {
-                        Task { await model.sendMessage() }
-                    } label: {
+            }
+            
+            HStack(alignment: .bottom, spacing: 10) {
+                TextField("Message OpenClaude...", text: $model.composingText, axis: .vertical)
+                    .lineLimit(1...8)
+                    .padding(12)
+                    .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                    )
+                
+                Button {
+                    Task { await model.sendMessage() }
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(model.isSending ? AnyShapeStyle(Color.gray.opacity(0.3)) : AnyShapeStyle(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing)))
+                            .frame(width: 44, height: 44)
+                            .shadow(color: model.isSending ? .clear : .purple.opacity(0.2), radius: 5, x: 0, y: 3)
+                        
                         if model.isSending {
                             ProgressView()
                                 .progressViewStyle(.circular)
                         } else {
-                            Label("Send", systemImage: "arrow.up.circle.fill")
+                            Image(systemName: "arrow.up")
+                                .font(.system(size: 18, weight: .bold))
+                                .foregroundColor(.white)
                         }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(model.isSending || model.composingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
+                .disabled(model.isSending || model.composingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .padding(.bottom, 2)
             }
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
+            .padding(.bottom, 24)
+            .background(.bar)
+            .clipShape(UnevenRoundedRectangle(topLeadingRadius: 24, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 24, style: .continuous))
+            .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: -4)
+            .ignoresSafeArea(edges: .bottom)
         }
     }
 

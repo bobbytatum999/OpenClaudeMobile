@@ -14,6 +14,7 @@ final class AppModel: ObservableObject {
     @Published var isSending = false
     @Published var isSearchingModels = false
     @Published var isDownloadingModel = false
+    @Published var downloadProgress: Double?
     @Published var isServerRunning = false
     @Published var statusLine = "Ready"
     @Published var selectedModelDetails: HuggingFaceModelSummary?
@@ -131,9 +132,17 @@ final class AppModel: ObservableObject {
 
     func install(_ model: HuggingFaceModelSummary, sibling: HuggingFaceSibling) async {
         isDownloadingModel = true
-        defer { isDownloadingModel = false }
+        downloadProgress = 0.0
+        defer {
+            isDownloadingModel = false
+            downloadProgress = nil
+        }
         do {
-            let installed = try await huggingFace.downloadGGUF(repoID: model.id, sibling: sibling, token: settings.huggingFaceToken)
+            let installed = try await huggingFace.downloadGGUF(repoID: model.id, sibling: sibling, token: settings.huggingFaceToken) { [weak self] progress in
+                Task { @MainActor in
+                    self?.downloadProgress = progress
+                }
+            }
             installedModels.removeAll { $0.id == installed.id }
             installedModels.insert(installed, at: 0)
             if settings.selectedLocalModelID == nil {

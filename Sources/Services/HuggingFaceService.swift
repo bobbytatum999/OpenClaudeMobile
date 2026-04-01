@@ -73,7 +73,38 @@ struct HuggingFaceService {
         return URL(string: "https://huggingface.co/\(repoID)/resolve/main/\(escaped)?download=true")!
     }
 
-    func downloadGGUF(repoID: String, sibling: HuggingFaceSibling, token: String) async throws -> InstalledModel {
+    private class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
+        var onProgress: ((Double) -> Void)?
+        var onCompletion: ((Result<URL, Error>) -> Void)?
+        private var temporaryDestination: URL?
+
+        func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+            guard totalBytesExpectedToWrite > 0 else { return }
+            onProgress?(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+        }
+
+        func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+            let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+            try? FileManager.default.moveItem(at: location, to: tempDir)
+            temporaryDestination = tempDir
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            if let error = error {
+                onCompletion?(.failure(error))
+            } else if let temp = temporaryDestination {
+                if let response = task.response as? HTTPURLResponse, !(200...299).contains(response.statusCode) {
+                    onCompletion?(.failure(ServiceError.invalidResponse))
+                } else {
+                    onCompletion?(.success(temp))
+                }
+            } else {
+                onCompletion?(.failure(ServiceError.missingGGUF))
+            }
+        }
+    }
+
+    func downloadGGUF(repoID: String, sibling: HuggingFaceSibling, token: String, onProgress: @escaping (Double) -> Void) async throws -> InstalledModel {
         let destinationDirectory = AppPersistence.modelsDirectory.appendingPathComponent(repoID.replacingOccurrences(of: "/", with: "__"), isDirectory: true)
         try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
         let destination = destinationDirectory.appendingPathComponent(sibling.filename)
@@ -84,9 +115,19 @@ struct HuggingFaceService {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
 
-        let (temporaryURL, response) = try await session.download(for: request)
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-            throw ServiceError.invalidResponse
+        let delegate = DownloadDelegate()
+        delegate.onProgress = onProgress
+        let tempSession = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+
+        let temporaryURL: URL = try await withCheckedThrowingContinuation { continuation in
+            var isResumed = false
+            delegate.onCompletion = { result in
+                guard !isResumed else { return }
+                isResumed = true
+                continuation.resume(with: result)
+            }
+            let task = tempSession.downloadTask(with: request)
+            task.resume()
         }
 
         if FileManager.default.fileExists(atPath: destination.path) {

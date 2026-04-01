@@ -44,7 +44,8 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_CFBundleDisplayName: OpenClaude
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
-        INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoadsInWebContent: YES
+        INFOPLIST_KEY_NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: YES
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: OpenClaude Mobile runs a localhost API server and can connect to LAN inference endpoints.
         INFOPLIST_KEY_NSBonjourServices:
           - _openclaude._tcp

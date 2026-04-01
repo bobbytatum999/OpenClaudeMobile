@@ -127,7 +127,13 @@ struct ModelsView: View {
                                 Task { await model.install(details, sibling: sibling) }
                             } label: {
                                 if model.isDownloadingModel {
-                                    ProgressView()
+                                    if let p = model.downloadProgress {
+                                        Text("\(Int(p * 100))%")
+                                            .font(.caption.bold())
+                                            .monospacedDigit()
+                                    } else {
+                                        ProgressView()
+                                    }
                                 } else {
                                     Label("Install", systemImage: "arrow.down.to.line")
                                 }
