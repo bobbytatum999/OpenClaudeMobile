@@ -23,6 +23,14 @@ struct AppPersistence {
         return url
     }
     
+    static var importedFilesDirectory: URL {
+        let url = workspaceDirectory.appendingPathComponent("ImportedFiles", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        return url
+    }
+    
     static var settingsURL: URL {
         workspaceDirectory.appendingPathComponent("settings.json")
     }

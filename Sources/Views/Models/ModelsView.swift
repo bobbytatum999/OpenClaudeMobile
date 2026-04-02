@@ -36,16 +36,16 @@ struct ModelsView: View {
                         }
                     }
                 }
-                
+
                 Section("Available on Hugging Face") {
-                    ForEach(model.hfModels) { hf in
+                    ForEach(model.searchedModels) { hf in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(hf.displayName)
                                 .font(.subheadline.weight(.semibold))
                             Text(hf.id)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
-                            
+
                             HStack {
                                 Label("\(hf.likes ?? 0)", systemImage: "heart.fill")
                                 Label("\(hf.downloads ?? 0)", systemImage: "arrow.down.circle.fill")
@@ -64,7 +64,10 @@ struct ModelsView: View {
                 }
             }
             .navigationTitle("Models")
-            .searchable(text: $searchText)
+            .searchable(text: $model.searchQuery)
+            .onSubmit(of: .search) {
+                Task { await model.searchHuggingFace() }
+            }
         }
     }
 }
