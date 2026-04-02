@@ -515,6 +515,7 @@ struct ExportSheet: View {
 
 // MARK: - Markdown Theme
 
+@MainActor
 extension Theme {
     static let openClaude = Theme.gitHub
         .text {
