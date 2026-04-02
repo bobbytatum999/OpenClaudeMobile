@@ -36,13 +36,13 @@ final class LocalModelEngine: @unchecked Sendable {
         }
     }
 
-    func generate(prompt: String, modelURL: URL, maxTokens: Int = 256) -> AsyncThrowingStream<String, Error> {
+    func generate(prompt: String, modelURL: URL, maxTokens: Int = 256, temperature: Float = 0.7) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 queue.async { [self] in
                     do {
                         try self._ensureModelLoaded(at: modelURL)
-                        try self._generateUnsafe(prompt: prompt, maxTokens: maxTokens) { token in
+                        try self._generateUnsafe(prompt: prompt, maxTokens: maxTokens, temperature: temperature) { token in
                             continuation.yield(token)
                         }
                         continuation.finish()
@@ -56,9 +56,7 @@ final class LocalModelEngine: @unchecked Sendable {
     }
 
     private func _ensureModelLoaded(at url: URL) throws {
-        if loadedPath == url.path, model != nil, context != nil, vocab != nil {
-            return
-        }
+        if loadedPath == url.path, model != nil, context != nil, vocab != nil { return }
         _unloadUnsafe()
         if !backendInitialized {
             llama_backend_init()
@@ -68,7 +66,7 @@ final class LocalModelEngine: @unchecked Sendable {
         var modelParams = llama_model_default_params()
         modelParams.use_mmap = true
         modelParams.use_mlock = true
-        
+
         let modelPointer: OpaquePointer? = url.path.withCString { cString in
             llama_model_load_from_file(cString, modelParams)
         }
@@ -79,7 +77,7 @@ final class LocalModelEngine: @unchecked Sendable {
         var contextParams = llama_context_default_params()
         contextParams.n_ctx = 4096
         contextParams.n_batch = 512
-        
+
         let contextPointer = llama_init_from_model(modelPointer, contextParams)
         guard let contextPointer else { throw EngineError.failedToCreateContext }
         context = contextPointer
@@ -89,13 +87,10 @@ final class LocalModelEngine: @unchecked Sendable {
     private func _unloadUnsafe() {
         if let context { llama_free(context) }
         if let model { llama_model_free(model) }
-        context = nil
-        model = nil
-        vocab = nil
-        loadedPath = nil
+        context = nil; model = nil; vocab = nil; loadedPath = nil
     }
 
-    private func _generateUnsafe(prompt: String, maxTokens: Int, onToken: (String) -> Void) throws {
+    private func _generateUnsafe(prompt: String, maxTokens: Int, temperature: Float, onToken: (String) -> Void) throws {
         guard let model, let context, let vocab else { throw EngineError.noModelSelected }
 
         let utf8Count = prompt.utf8.count
@@ -112,32 +107,49 @@ final class LocalModelEngine: @unchecked Sendable {
         for i in 0..<tokens.count {
             llama_batch_add_to_batch(&batch, tokens[i], Int32(i), [0], i == tokens.count - 1)
         }
-
         guard llama_decode(context, batch) == 0 else { throw EngineError.decodeFailed }
 
         var n_cur = Int32(tokens.count)
+        let n_vocab = Int(llama_vocab_n_tokens(vocab))
 
         for _ in 0..<maxTokens {
-            let n_vocab = llama_vocab_n_tokens(vocab)
             let logits = llama_get_logits_ith(context, batch.n_tokens - 1)!
-            
-            var next: llama_token = 0
-            var maxLogit = logits[0]
-            for i in 1..<Int(n_vocab) {
-                if logits[i] > maxLogit {
-                    maxLogit = logits[i]
-                    next = llama_token(i)
+
+            // FIX: temperature sampling instead of pure greedy argmax
+            let next: llama_token
+            if temperature <= 0 {
+                // greedy
+                var best: llama_token = 0
+                var bestVal = logits[0]
+                for i in 1..<n_vocab {
+                    if logits[i] > bestVal { bestVal = logits[i]; best = llama_token(i) }
                 }
+                next = best
+            } else {
+                // softmax with temperature
+                var scaled = (0..<n_vocab).map { logits[$0] / temperature }
+                let maxVal = scaled.max() ?? 0
+                var exps = scaled.map { expf($0 - maxVal) }
+                let sum = exps.reduce(0, +)
+                exps = exps.map { $0 / sum }
+
+                // sample from distribution
+                var r = Float.random(in: 0..<1)
+                var chosen = n_vocab - 1
+                for i in 0..<n_vocab {
+                    r -= exps[i]
+                    if r <= 0 { chosen = i; break }
+                }
+                next = llama_token(chosen)
             }
-            
+
             if next == llama_vocab_eos(vocab) { break }
-            
+
             let piece = tokenToPiece(vocab: vocab, token: next)
             onToken(piece)
 
             batch.n_tokens = 0
             llama_batch_add_to_batch(&batch, next, n_cur, [0], true)
-            
             n_cur += 1
             guard llama_decode(context, batch) == 0 else { throw EngineError.decodeFailed }
         }

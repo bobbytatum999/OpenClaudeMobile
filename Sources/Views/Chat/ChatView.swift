@@ -94,6 +94,13 @@ struct ChatView: View {
                             .foregroundColor(isSelected ? .white : .primary.opacity(0.7))
                     }
                     .buttonStyle(.plain)
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            withAnimation { model.deleteSession(session) }
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
                 }
             }
             .padding(.horizontal)

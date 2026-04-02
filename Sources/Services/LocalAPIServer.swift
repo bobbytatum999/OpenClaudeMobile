@@ -1,7 +1,6 @@
 import Foundation
 import Network
 
-// Minimal HTTP Request parser for local API
 struct HTTPRequest: Sendable {
     let method: String
     let path: String
@@ -11,7 +10,7 @@ struct HTTPRequest: Sendable {
     static func parse(from data: Data) -> HTTPRequest? {
         guard let requestString = String(data: data, encoding: .utf8) else { return nil }
         let lines = requestString.components(separatedBy: "\r\n")
-        guard lines.count > 0 else { return nil }
+        guard !lines.isEmpty else { return nil }
 
         let firstLineParts = lines[0].components(separatedBy: " ")
         guard firstLineParts.count >= 2 else { return nil }
@@ -26,9 +25,11 @@ struct HTTPRequest: Sendable {
                 bodyStartIndex = index + 1
                 break
             }
-            let headerParts = line.components(separatedBy: ": ")
-            if headerParts.count == 2 {
-                headers[headerParts[0]] = headerParts[1]
+            // FIX: split on first ": " only so header values containing colons are preserved
+            if let colonRange = line.range(of: ": ") {
+                let key = String(line[line.startIndex..<colonRange.lowerBound])
+                let value = String(line[colonRange.upperBound...])
+                headers[key] = value
             }
         }
 
@@ -66,7 +67,8 @@ actor LocalAPIServer {
 
     private var listener: NWListener?
     private(set) var isRunning = false
-    private weak var appModel: AppModel?
+    // FIX: use a plain stored reference instead of weak — AppModel is @StateObject and lives for app lifetime
+    private var appModel: AppModel?
 
     func attach(appModel: AppModel) {
         self.appModel = appModel
@@ -77,14 +79,14 @@ actor LocalAPIServer {
         let port = NWEndpoint.Port(rawValue: configuration.port) ?? 8080
         let listener = try NWListener(using: .tcp, on: port)
         self.listener = listener
-        
+
         listener.newConnectionHandler = { [weak self] connection in
             connection.start(queue: .global(qos: .utility))
             Task { [weak self] in
                 await self?.receiveLoop(on: connection)
             }
         }
-        
+
         listener.stateUpdateHandler = { [weak self] state in
             Task {
                 switch state {
@@ -115,17 +117,15 @@ actor LocalAPIServer {
         while true {
             do {
                 guard let data = try await receive(on: connection) else {
-                    connection.cancel()
-                    break
+                    connection.cancel(); break
                 }
                 buffer.append(data)
                 if let request = HTTPRequest.parse(from: buffer) {
                     await handle(request: request, on: connection)
-                    buffer.removeAll() 
+                    buffer.removeAll()
                 }
             } catch {
-                connection.cancel()
-                break
+                connection.cancel(); break
             }
         }
     }
@@ -160,7 +160,12 @@ actor LocalAPIServer {
                 let decoded = try JSONDecoder().decode(ChatRequest.self, from: request.body)
                 if decoded.stream == true {
                     try await sendSSEPrelude(on: connection)
-                    let stream = await appModel?.streamFromAPI(messages: decoded.messages, model: decoded.model, temperature: decoded.temperature, maxTokens: decoded.max_tokens)
+                    let stream = await appModel?.streamFromAPI(
+                        messages: decoded.messages,
+                        model: decoded.model,
+                        temperature: decoded.temperature,
+                        maxTokens: decoded.max_tokens
+                    )
                     if let chunks = stream {
                         for try await chunk in chunks {
                             let payload: [String: Any] = [
@@ -181,19 +186,22 @@ actor LocalAPIServer {
                     try await sendRaw(Data("data: [DONE]\n\n".utf8), on: connection)
                     connection.cancel()
                 } else {
-                    let text = try await appModel?.completeFromAPI(messages: decoded.messages, model: decoded.model, temperature: decoded.temperature, maxTokens: decoded.max_tokens) ?? ""
+                    let text = try await appModel?.completeFromAPI(
+                        messages: decoded.messages,
+                        model: decoded.model,
+                        temperature: decoded.temperature,
+                        maxTokens: decoded.max_tokens
+                    ) ?? ""
                     let response = OpenAICompatibleResponse(
                         id: "chatcmpl-" + UUID().uuidString,
                         object: "chat.completion",
                         created: Int(Date().timeIntervalSince1970),
                         model: decoded.model ?? "local",
-                        choices: [
-                            OpenAICompatibleChoice(
-                                index: 0,
-                                message: .init(role: "assistant", content: text),
-                                finish_reason: "stop"
-                            )
-                        ]
+                        choices: [OpenAICompatibleChoice(
+                            index: 0,
+                            message: .init(role: "assistant", content: text),
+                            finish_reason: "stop"
+                        )]
                     )
                     let body = try JSONEncoder().encode(response)
                     try await sendJSON(body, status: "200 OK", on: connection)

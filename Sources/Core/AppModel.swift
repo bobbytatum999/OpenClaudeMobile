@@ -157,7 +157,8 @@ final class AppModel: ObservableObject {
     }
 
     func sendMessage() async {
-        guard let index = selectedSessionIndex else { return }
+        guard let sessionID = selectedSessionID,
+              let index = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
         let trimmed = composingText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
@@ -170,24 +171,31 @@ final class AppModel: ObservableObject {
         sessions[index].messages.append(ChatMessage(id: assistantID, role: .assistant, content: ""))
         persistSessions()
 
+        // Capture messages snapshot before async — avoids stale index bugs
+        let messagesSnapshot = Array(sessions[index].messages.dropLast())
+
         do {
-            let stream = try currentResponseStream(from: sessions[index].messages.dropLast().map { $0 })
+            let stream = try currentResponseStream(from: messagesSnapshot)
             for try await token in stream {
-                if let sessionIndex = self.selectedSessionIndex,
-                   let messageIndex = self.sessions[sessionIndex].messages.firstIndex(where: { $0.id == assistantID }) {
-                    self.sessions[sessionIndex].messages[messageIndex].content += token
+                // Re-resolve index each iteration in case sessions array changed
+                if let liveIndex = self.sessions.firstIndex(where: { $0.id == sessionID }),
+                   let messageIndex = self.sessions[liveIndex].messages.firstIndex(where: { $0.id == assistantID }) {
+                    self.sessions[liveIndex].messages[messageIndex].content += token
                 }
             }
-            if let titleSource = sessions[index].messages.first(where: { $0.role == .user })?.content, sessions[index].title == "New Chat" {
-                sessions[index].title = String(titleSource.prefix(42))
+            if let liveIndex = self.sessions.firstIndex(where: { $0.id == sessionID }) {
+                if let titleSource = sessions[liveIndex].messages.first(where: { $0.role == .user })?.content,
+                   sessions[liveIndex].title == "New Chat" {
+                    sessions[liveIndex].title = String(titleSource.prefix(42))
+                }
+                sessions[liveIndex].updatedAt = .now
             }
-            sessions[index].updatedAt = .now
             statusLine = "Response complete"
             persistSessions()
         } catch {
-            if let sessionIndex = selectedSessionIndex,
-               let messageIndex = sessions[sessionIndex].messages.firstIndex(where: { $0.id == assistantID }) {
-                sessions[sessionIndex].messages[messageIndex].content = "Error: \(error.localizedDescription)"
+            if let liveIndex = self.sessions.firstIndex(where: { $0.id == sessionID }),
+               let messageIndex = sessions[liveIndex].messages.firstIndex(where: { $0.id == assistantID }) {
+                sessions[liveIndex].messages[messageIndex].content = "Error: \(error.localizedDescription)"
             }
             statusLine = error.localizedDescription
             persistSessions()
@@ -210,7 +218,7 @@ final class AppModel: ObservableObject {
             guard let model else {
                 throw LocalModelEngine.EngineError.noModelSelected
             }
-            return local.generate(prompt: prompt, modelURL: model.fileURL, maxTokens: activeRemote.maxTokens)
+            return local.generate(prompt: prompt, modelURL: model.fileURL, maxTokens: activeRemote.maxTokens, temperature: Float(activeRemote.temperature))
         }
         let effectiveMessages = messages + selectedDocs.map {
             ChatMessage(role: .user, content: "[Attached document: \($0.filename)]\n\($0.textPreview)")
