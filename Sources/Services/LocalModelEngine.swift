@@ -38,17 +38,20 @@ final class LocalModelEngine: @unchecked Sendable {
 
     func generate(prompt: String, modelURL: URL, maxTokens: Int = 256) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
-            queue.async { [self] in
-                do {
-                    try self._ensureModelLoaded(at: modelURL)
-                    try self._generateUnsafe(prompt: prompt, maxTokens: maxTokens) { token in
-                        continuation.yield(token)
+            let task = Task {
+                queue.async { [self] in
+                    do {
+                        try self._ensureModelLoaded(at: modelURL)
+                        try self._generateUnsafe(prompt: prompt, maxTokens: maxTokens) { token in
+                            continuation.yield(token)
+                        }
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
                     }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
                 }
             }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
@@ -62,7 +65,10 @@ final class LocalModelEngine: @unchecked Sendable {
             backendInitialized = true
         }
 
-        let modelParams = llama_model_default_params()
+        var modelParams = llama_model_default_params()
+        modelParams.use_mmap = true
+        modelParams.use_mlock = true
+        
         let modelPointer: OpaquePointer? = url.path.withCString { cString in
             llama_model_load_from_file(cString, modelParams)
         }
@@ -73,6 +79,9 @@ final class LocalModelEngine: @unchecked Sendable {
         var contextParams = llama_context_default_params()
         contextParams.n_ctx = 4096
         contextParams.n_batch = 512
+        contextParams.type_k = GGML_TYPE_F16
+        contextParams.type_v = GGML_TYPE_F16
+        
         let contextPointer = llama_init_from_model(modelPointer, contextParams)
         guard let contextPointer else { throw EngineError.failedToCreateContext }
         context = contextPointer
@@ -89,20 +98,14 @@ final class LocalModelEngine: @unchecked Sendable {
     }
 
     private func _generateUnsafe(prompt: String, maxTokens: Int, onToken: (String) -> Void) throws {
-        guard model != nil, let context, let vocab else { throw EngineError.noModelSelected }
+        guard let model, let context, let vocab else { throw EngineError.noModelSelected }
+
+        llama_kv_cache_clear(context)
 
         let utf8Count = prompt.utf8.count
-        var promptTokens = [llama_token](repeating: 0, count: max(utf8Count + 16, 64))
+        var promptTokens = [llama_token](repeating: 0, count: utf8Count + 16)
         let tokenCount: Int32 = prompt.withCString { cString in
-            llama_tokenize(
-                vocab,
-                cString,
-                Int32(utf8Count),
-                &promptTokens,
-                Int32(promptTokens.count),
-                true,
-                true
-            )
+            llama_tokenize(vocab, cString, Int32(utf8Count), &promptTokens, Int32(promptTokens.count), true, true)
         }
         guard tokenCount > 0 else { throw EngineError.tokenizationFailed }
         let tokens = Array(promptTokens.prefix(Int(tokenCount)))
@@ -110,59 +113,37 @@ final class LocalModelEngine: @unchecked Sendable {
         var batch = llama_batch_init(512, 0, 1)
         defer { llama_batch_free(batch) }
 
-        batch.n_tokens = Int32(tokens.count)
         for i in 0..<tokens.count {
-            batch.token[i] = tokens[i]
-            batch.pos[i] = Int32(i)
-            batch.n_seq_id[i] = 1
-            if let seqIDs = batch.seq_id, let seq = seqIDs[i] {
-                seq[0] = 0
-            }
-            batch.logits[i] = 0
-        }
-        if batch.n_tokens > 0 {
-            batch.logits[Int(batch.n_tokens) - 1] = 1
+            llama_batch_add(&batch, tokens[i], Int32(i), [0], i == tokens.count - 1)
         }
 
-        guard llama_decode(context, batch) == 0 else {
-            throw EngineError.decodeFailed
-        }
+        guard llama_decode(context, batch) == 0 else { throw EngineError.decodeFailed }
 
-        var currentPosition = batch.n_tokens
-        let eos = llama_vocab_eos(vocab)
+        var n_cur = Int32(tokens.count)
+        var lastToken = tokens.last!
 
         for _ in 0..<maxTokens {
-            guard let logits = llama_get_logits_ith(context, batch.n_tokens - 1) else {
-                throw EngineError.decodeFailed
+            let n_vocab = llama_vocab_n_tokens(vocab)
+            let logits = llama_get_logits_ith(context, batch.n_tokens - 1)!
+            
+            var candidates = [llama_token_data](repeating: llama_token_data(), count: Int(n_vocab))
+            for i in 0..<Int(n_vocab) {
+                candidates[i] = llama_token_data(id: llama_token(i), logit: logits[i], p: 0.0)
             }
-            let vocabSize = Int(llama_vocab_n_tokens(vocab))
-            var nextToken: llama_token = 0
-            var bestLogit = logits[0]
-            if vocabSize > 1 {
-                for i in 1..<vocabSize {
-                    if logits[i] > bestLogit {
-                        bestLogit = logits[i]
-                        nextToken = llama_token(i)
-                    }
-                }
-            }
-            if nextToken == eos { break }
-            let piece = tokenToPiece(vocab: vocab, token: nextToken)
+            
+            var candidatesList = llama_token_data_array(data: &candidates, size: candidates.count, sorted: false)
+            let id = llama_sample_token_greedy(context, &candidatesList)
+            
+            if id == llama_vocab_eos(vocab) { break }
+            
+            let piece = tokenToPiece(vocab: vocab, token: id)
             onToken(piece)
 
-            batch.n_tokens = 1
-            batch.token[0] = nextToken
-            batch.pos[0] = currentPosition
-            batch.n_seq_id[0] = 1
-            if let seqIDs = batch.seq_id, let seq = seqIDs[0] {
-                seq[0] = 0
-            }
-            batch.logits[0] = 1
-            currentPosition += 1
-
-            guard llama_decode(context, batch) == 0 else {
-                throw EngineError.decodeFailed
-            }
+            llama_batch_clear(&batch)
+            llama_batch_add(&batch, id, n_cur, [0], true)
+            
+            n_cur += 1
+            guard llama_decode(context, batch) == 0 else { throw EngineError.decodeFailed }
         }
     }
 
@@ -173,4 +154,19 @@ final class LocalModelEngine: @unchecked Sendable {
         let bytes = buffer.prefix(Int(length)).map { UInt8(bitPattern: $0) }
         return String(decoding: bytes, as: UTF8.self)
     }
+}
+
+private func llama_batch_add(_ batch: inout llama_batch, _ token: llama_token, _ pos: Int32, _ seq_ids: [Int32], _ logits: Bool) {
+    batch.token[Int(batch.n_tokens)] = token
+    batch.pos[Int(batch.n_tokens)] = pos
+    batch.n_seq_id[Int(batch.n_tokens)] = Int32(seq_ids.count)
+    for (i, seq_id) in seq_ids.enumerated() {
+        batch.seq_id[Int(batch.n_tokens)]![i] = seq_id
+    }
+    batch.logits[Int(batch.n_tokens)] = logits ? 1 : 0
+    batch.n_tokens += 1
+}
+
+private func llama_batch_clear(_ batch: inout llama_batch) {
+    batch.n_tokens = 0
 }
