@@ -12,6 +12,13 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     let role: Role
     var content: String
     var updatedAt = Date()
+    
+    init(id: UUID = UUID(), role: Role, content: String, updatedAt: Date = Date()) {
+        self.id = id
+        self.role = role
+        self.content = content
+        self.updatedAt = updatedAt
+    }
 }
 
 struct ChatSession: Identifiable, Codable {
