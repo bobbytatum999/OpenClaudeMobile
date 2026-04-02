@@ -330,14 +330,21 @@ final class AppModel: ObservableObject {
 
     // MARK: - API (used by LocalAPIServer)
 
-    func apiModelInventory() -> [[String: Any]] {
+    // Returns a Sendable-safe snapshot for use by the server actor
+    nonisolated func apiModelInventory(
+        installedModels: [InstalledModel],
+        settings: AppSettings
+    ) -> [[String: String]] {
         switch settings.selectedRuntime {
         case .local:
             return installedModels.map { m in
-                ["id": m.id, "object": "model", "created": Int(m.installedAt.timeIntervalSince1970), "owned_by": "local"]
+                ["id": m.id, "object": "model",
+                 "created": "\(Int(m.installedAt.timeIntervalSince1970))",
+                 "owned_by": "local"]
             }
         case .remote:
-            return [["id": settings.remote.model, "object": "model", "created": 0, "owned_by": "remote"]]
+            return [["id": settings.remote.model, "object": "model",
+                     "created": "0", "owned_by": "remote"]]
         }
     }
 

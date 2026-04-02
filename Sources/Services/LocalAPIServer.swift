@@ -152,7 +152,8 @@ actor LocalAPIServer {
                 let body = try JSONSerialization.data(withJSONObject: payload)
                 try await sendJSON(body, status: "200 OK", on: connection)
             case ("GET", "/v1/models"):
-                let models = await appModel?.apiModelInventory() ?? []
+                let snap = await MainActor.run { (appModel?.installedModels ?? [], appModel?.settings ?? AppSettings()) }
+                let models = appModel?.apiModelInventory(installedModels: snap.0, settings: snap.1) ?? []
                 let payload: [String: Any] = ["object": "list", "data": models]
                 let body = try JSONSerialization.data(withJSONObject: payload)
                 try await sendJSON(body, status: "200 OK", on: connection)
