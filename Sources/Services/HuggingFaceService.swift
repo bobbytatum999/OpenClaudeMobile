@@ -55,15 +55,15 @@ struct HuggingFaceService {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let items = try decoder.decode([SearchResponseItem].self, from: data)
-        return items.map {
+        return items.map { item in
             HuggingFaceModelSummary(
-                id: sh.id,
-                downloads: sh.downloads,
-                likes: sh.likes,
-                pipelineTag: sh.pipelineTag,
-                privateRepo: sh.privateRepo ?? false,
-                lastModified: sh.lastModified,
-                siblings: ($0.siblings ?? []).map { HuggingFaceSibling(rfilename: $0.rfilename, size: $0.size) }
+                id: item.id,
+                downloads: item.downloads,
+                likes: item.likes,
+                pipelineTag: item.pipelineTag,
+                privateRepo: item.privateRepo ?? false,
+                lastModified: item.lastModified,
+                siblings: (item.siblings ?? []).map { HuggingFaceSibling(rfilename: $0.rfilename, size: $0.size) }
             )
         }
     }
