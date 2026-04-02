@@ -4,10 +4,12 @@ import Network
 actor LocalAPIServer {
     enum ServerError: LocalizedError {
         case alreadyRunning
+        case invalidRequest
 
         var errorDescription: String? {
             switch self {
             case .alreadyRunning: return "The local API server is already running."
+            case .invalidRequest: return "The server received an invalid HTTP request."
             }
         }
     }
@@ -37,10 +39,14 @@ actor LocalAPIServer {
         let port = NWEndpoint.Port(rawValue: configuration.port) ?? 8080
         let listener = try NWListener(using: .tcp, on: port)
         self.listener = listener
+        
         listener.newConnectionHandler = { [weak self] connection in
             connection.start(queue: .global(qos: .utility))
-            self?.receive(on: connection, buffer: Data())
+            Task { [weak self] in
+                await self?.receiveLoop(on: connection)
+            }
         }
+        
         listener.stateUpdateHandler = { [weak self] state in
             Task {
                 switch state {
@@ -66,27 +72,39 @@ actor LocalAPIServer {
         isRunning = value
     }
 
-    nonisolated private func receive(on connection: NWConnection, buffer: Data) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, isComplete, error in
-            if error != nil {
-                connection.cancel()
-                return
-            }
-            var accumulator = buffer
-            if let data {
-                accumulator.append(data)
-            }
-            if let request = HTTPRequest.parse(from: accumulator) {
-                Task { [weak self] in
-                    await self?.handle(request: request, on: connection)
+    private func receiveLoop(on connection: NWConnection) async {
+        var buffer = Data()
+        while true {
+            do {
+                let data = try await receive(on: connection)
+                if let data = data {
+                    buffer.append(data)
+                    if let request = HTTPRequest.parse(from: buffer) {
+                        await handle(request: request, on: connection)
+                        buffer.removeAll() // Simple reset for next request on same connection
+                    }
+                } else {
+                    connection.cancel()
+                    break
                 }
-                return
-            }
-            if isComplete {
+            } catch {
                 connection.cancel()
-                return
+                break
             }
-            self?.receive(on: connection, buffer: accumulator)
+        }
+    }
+
+    private func receive(on connection: NWConnection) async throws -> Data? {
+        return try await withCheckedThrowingContinuation { continuation in
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, error in
+                if let error = error {
+                    continuation.resume(throwing: error)
+                } else if isComplete && data == nil {
+                    continuation.resume(returning: nil)
+                } else {
+                    continuation.resume(returning: data)
+                }
+            }
         }
     }
 
@@ -106,32 +124,33 @@ actor LocalAPIServer {
                 let decoded = try JSONDecoder().decode(ChatRequest.self, from: request.body)
                 if decoded.stream == true {
                     try await sendSSEPrelude(on: connection)
-                    let chunks = await appModel?.streamFromAPI(messages: decoded.messages, model: decoded.model, temperature: decoded.temperature, maxTokens: decoded.max_tokens) ?? AsyncThrowingStream<String, Error> { continuation in
-                        continuation.finish()
-                    }
-                    for try await chunk in chunks {
-                        let payload: [String: Any] = [
-                            "id": UUID().uuidString,
-                            "object": "chat.completion.chunk",
-                            "choices": [[
-                                "index": 0,
-                                "delta": ["content": chunk],
-                                "finish_reason": NSNull()
-                            ]]
-                        ]
-                        let data = try JSONSerialization.data(withJSONObject: payload)
-                        try await sendRaw(Data("data: ".utf8) + data + Data("\n\n".utf8), on: connection)
+                    let stream = await appModel?.streamFromAPI(messages: decoded.messages, model: decoded.model, temperature: decoded.temperature, maxTokens: decoded.max_tokens)
+                    if let chunks = stream {
+                        for try await chunk in chunks {
+                            let payload: [String: Any] = [
+                                "id": "chatcmpl-" + UUID().uuidString,
+                                "object": "chat.completion.chunk",
+                                "created": Int(Date().timeIntervalSince1970),
+                                "model": decoded.model ?? "local",
+                                "choices": [[
+                                    "index": 0,
+                                    "delta": ["content": chunk],
+                                    "finish_reason": NSNull()
+                                ]]
+                            ]
+                            let data = try JSONSerialization.data(withJSONObject: payload)
+                            try await sendRaw(Data("data: ".utf8) + data + Data("\n\n".utf8), on: connection)
+                        }
                     }
                     try await sendRaw(Data("data: [DONE]\n\n".utf8), on: connection)
                     connection.cancel()
                 } else {
                     let text = try await appModel?.completeFromAPI(messages: decoded.messages, model: decoded.model, temperature: decoded.temperature, maxTokens: decoded.max_tokens) ?? ""
-                    let currentId = await appModel?.currentModelIdentifier() ?? "unknown"
                     let response = OpenAICompatibleChatResponse(
-                        id: UUID().uuidString,
+                        id: "chatcmpl-" + UUID().uuidString,
                         object: "chat.completion",
                         created: Int(Date().timeIntervalSince1970),
-                        model: decoded.model ?? currentId,
+                        model: decoded.model ?? "local",
                         choices: [
                             OpenAICompatibleChatChoice(
                                 index: 0,
@@ -154,20 +173,20 @@ actor LocalAPIServer {
     }
 
     private func sendJSON(_ body: Data, status: String, on connection: NWConnection) async throws {
-        let headers = "HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+        let headers = "HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
         try await sendRaw(Data(headers.utf8) + body, on: connection)
         connection.cancel()
     }
 
     private func sendSSEPrelude(on connection: NWConnection) async throws {
-        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nX-Accel-Buffering: no\r\n\r\n"
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\nX-Accel-Buffering: no\r\n\r\n"
         try await sendRaw(Data(headers.utf8), on: connection)
     }
 
     private func sendRaw(_ data: Data, on connection: NWConnection) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             connection.send(content: data, completion: .contentProcessed { error in
-                if let error {
+                if let error = error {
                     continuation.resume(throwing: error)
                 } else {
                     continuation.resume(returning: ())
@@ -192,6 +211,7 @@ struct HTTPRequest: Sendable {
         guard let requestLine = lines.first else { return nil }
         let parts = requestLine.split(separator: " ")
         guard parts.count >= 2 else { return nil }
+        
         var headers: [String: String] = [:]
         for line in lines.dropFirst() where !line.isEmpty {
             guard let colon = line.firstIndex(of: ":") else { continue }
@@ -199,10 +219,36 @@ struct HTTPRequest: Sendable {
             let value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespacesAndNewlines)
             headers[key] = value
         }
+        
         let contentLength = Int(headers["content-length"] ?? "0") ?? 0
         let bodyStart = range.upperBound
         guard data.count >= bodyStart + contentLength else { return nil }
         let body = data[bodyStart..<(bodyStart + contentLength)]
+        
         return HTTPRequest(method: String(parts[0]), path: String(parts[1]), headers: headers, body: Data(body))
     }
+}
+
+struct OpenAICompatibleChatResponse: Encodable {
+    let id: String
+    let object: String
+    let created: Int
+    let model: String
+    let choices: [OpenAICompatibleChatChoice]
+}
+
+struct OpenAICompatibleChatChoice: Encodable {
+    let index: Int
+    let message: OpenAICompatibleChatMessage
+    let finishReason: String
+
+    enum CodingKeys: String, CodingKey {
+        case index, message
+        case finishReason = "finish_reason"
+    }
+}
+
+struct OpenAICompatibleChatMessage: Encodable {
+    let role: String
+    let content: String
 }
