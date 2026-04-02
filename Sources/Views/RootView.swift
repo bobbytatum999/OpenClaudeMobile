@@ -22,7 +22,7 @@ struct RootView: View {
             FilesView()
                 .tabItem { Label("Files", systemImage: "folder.fill") }
                 .tag(Tab.files)
-                .badge(model.settings.selectedDocumentIDs.isEmpty ? nil : model.settings.selectedDocumentIDs.count)
+                .badge(model.settings.selectedDocumentIDs.isEmpty ? nil : "\(model.settings.selectedDocumentIDs.count)")
 
             ServerView()
                 .tabItem { Label("Server", systemImage: "server.rack") }

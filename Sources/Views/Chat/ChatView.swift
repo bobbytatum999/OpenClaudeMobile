@@ -515,18 +515,19 @@ struct ExportSheet: View {
 
 // MARK: - Markdown Theme
 
-extension MarkdownTheme {
-    static let openClaude = MarkdownTheme.basic
-        .text { FontSize(.em(1)) }
+extension Theme {
+    static let openClaude = Theme.gitHub
+        .text {
+            FontSize(.em(1))
+            ForegroundColor(.primary)
+        }
         .code {
             FontFamilyVariant(.monospaced)
             FontSize(.em(0.9))
             BackgroundColor(Color(.systemFill))
-            ForegroundColor(Color.primary)
         }
-        .codeBlock { configuration in
+        .codeBlock { (configuration: CodeBlockConfiguration) in
             VStack(alignment: .leading, spacing: 0) {
-                // Language label + copy button
                 HStack {
                     Text(configuration.language ?? "code")
                         .font(.caption.monospaced())
@@ -539,6 +540,7 @@ extension MarkdownTheme {
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
+                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
@@ -547,11 +549,15 @@ extension MarkdownTheme {
                 ScrollView(.horizontal, showsIndicators: false) {
                     configuration.label
                         .relativeLineSpacing(.em(0.25))
-                        .markdownTextStyle { FontFamilyVariant(.monospaced); FontSize(.em(0.88)) }
+                        .markdownTextStyle {
+                            FontFamilyVariant(.monospaced)
+                            FontSize(.em(0.88))
+                        }
                         .padding(12)
                 }
             }
-            .background(Color(.systemFill))
+            .background(Color(.secondarySystemBackground))
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .markdownMargin(top: 0, bottom: 16)
         }
 }
