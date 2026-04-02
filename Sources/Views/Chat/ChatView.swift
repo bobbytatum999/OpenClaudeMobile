@@ -17,6 +17,9 @@ struct ChatView: View {
                     .padding(.bottom, 8)
                 
                 messageList
+                    .onTapGesture {
+                        hideKeyboard()
+                    }
                 
                 composer
             }
@@ -195,5 +198,11 @@ struct ChatView: View {
 
     private var selectedDocuments: [ImportedDocument] {
         model.importedDocuments.filter { model.settings.selectedDocumentIDs.contains($0.id) }
+    }
+}
+
+extension View {
+    func hideKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 }
