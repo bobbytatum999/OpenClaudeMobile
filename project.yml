@@ -7,6 +7,9 @@ packages:
   llama.swift:
     url: https://github.com/mattt/llama.swift
     exactVersion: 2.8611.0
+  swift-markdown-ui:
+    url: https://github.com/gonzalezreal/swift-markdown-ui
+    from: 2.4.0
 settings:
   base:
     PRODUCT_NAME: OpenClaudeMobile
@@ -36,6 +39,8 @@ targets:
     dependencies:
       - package: llama.swift
         product: LlamaSwift
+      - package: swift-markdown-ui
+        product: MarkdownUI
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.nightvibes.openclaudemobile

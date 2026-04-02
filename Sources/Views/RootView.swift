@@ -1,40 +1,39 @@
 import SwiftUI
 
 struct RootView: View {
-    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject var model: AppModel
+    @State private var selectedTab: Tab = .chat
+
+    enum Tab: Hashable {
+        case chat, models, files, server, settings
+    }
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             ChatView()
-                .tabItem {
-                    Label("Chat", systemImage: "bubble.left.and.bubble.right.fill")
-                }
+                .tabItem { Label("Chat", systemImage: "message.fill") }
+                .tag(Tab.chat)
 
             ModelsView()
-                .tabItem {
-                    Label("Models", systemImage: "cube.box.fill")
-                }
+                .tabItem { Label("Models", systemImage: "cpu.fill") }
+                .tag(Tab.models)
+                .badge(model.installedModels.isEmpty ? "!" : nil)
 
-            NavigationStack {
-                FilesView()
-            }
-            .tabItem {
-                Label("Files", systemImage: "doc.text.fill")
-            }
+            FilesView()
+                .tabItem { Label("Files", systemImage: "folder.fill") }
+                .tag(Tab.files)
+                .badge(model.settings.selectedDocumentIDs.isEmpty ? nil : model.settings.selectedDocumentIDs.count)
 
-            NavigationStack {
-                ServerView()
-            }
-            .tabItem {
-                Label("Server", systemImage: "server.rack")
-            }
+            ServerView()
+                .tabItem { Label("Server", systemImage: "server.rack") }
+                .tag(Tab.server)
+                .badge(model.isServerRunning ? "●" : nil)
 
-            NavigationStack {
-                SettingsView()
-            }
-            .tabItem {
-                Label("Settings", systemImage: "gearshape.fill")
-            }
+            SettingsView()
+                .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+                .tag(Tab.settings)
         }
+        .task { await model.bootstrap() }
+        .tint(.accentColor)
     }
 }
