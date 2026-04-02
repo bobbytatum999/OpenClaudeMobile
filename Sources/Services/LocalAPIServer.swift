@@ -81,7 +81,7 @@ actor LocalAPIServer {
                     buffer.append(data)
                     if let request = HTTPRequest.parse(from: buffer) {
                         await handle(request: request, on: connection)
-                        buffer.removeAll() // Simple reset for next request on same connection
+                        buffer.removeAll() 
                     }
                 } else {
                     connection.cancel()
@@ -112,7 +112,7 @@ actor LocalAPIServer {
         do {
             switch (request.method, request.path) {
             case ("GET", "/health"):
-                let payload: [String: Any] = ["status": "ok", "server": "openclaude-mobile", "running": true]
+                let payload: [String: Any] = ["status": "ok"]
                 let body = try JSONSerialization.data(withJSONObject: payload)
                 try await sendJSON(body, status: "200 OK", on: connection)
             case ("GET", "/v1/models"):
@@ -146,16 +146,16 @@ actor LocalAPIServer {
                     connection.cancel()
                 } else {
                     let text = try await appModel?.completeFromAPI(messages: decoded.messages, model: decoded.model, temperature: decoded.temperature, maxTokens: decoded.max_tokens) ?? ""
-                    let response = OpenAICompatibleChatResponse(
+                    let response = OpenAICompatibleResponse(
                         id: "chatcmpl-" + UUID().uuidString,
                         object: "chat.completion",
                         created: Int(Date().timeIntervalSince1970),
                         model: decoded.model ?? "local",
                         choices: [
-                            OpenAICompatibleChatChoice(
+                            OpenAICompatibleChoice(
                                 index: 0,
                                 message: .init(role: "assistant", content: text),
-                                finishReason: "stop"
+                                finish_reason: "stop"
                             )
                         ]
                     )
@@ -186,7 +186,7 @@ actor LocalAPIServer {
     private func sendRaw(_ data: Data, on connection: NWConnection) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             connection.send(content: data, completion: .contentProcessed { error in
-                if let error = error {
+                if let error {
                     continuation.resume(throwing: error)
                 } else {
                     continuation.resume(returning: ())
@@ -196,59 +196,21 @@ actor LocalAPIServer {
     }
 }
 
-struct HTTPRequest: Sendable {
-    let method: String
-    let path: String
-    let headers: [String: String]
-    let body: Data
-
-    static func parse(from data: Data) -> HTTPRequest? {
-        let separator = Data("\r\n\r\n".utf8)
-        guard let range = data.range(of: separator) else { return nil }
-        let headerData = data[..<range.lowerBound]
-        guard let headerString = String(data: headerData, encoding: .utf8) else { return nil }
-        let lines = headerString.components(separatedBy: "\r\n")
-        guard let requestLine = lines.first else { return nil }
-        let parts = requestLine.split(separator: " ")
-        guard parts.count >= 2 else { return nil }
-        
-        var headers: [String: String] = [:]
-        for line in lines.dropFirst() where !line.isEmpty {
-            guard let colon = line.firstIndex(of: ":") else { continue }
-            let key = String(line[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            let value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespacesAndNewlines)
-            headers[key] = value
-        }
-        
-        let contentLength = Int(headers["content-length"] ?? "0") ?? 0
-        let bodyStart = range.upperBound
-        guard data.count >= bodyStart + contentLength else { return nil }
-        let body = data[bodyStart..<(bodyStart + contentLength)]
-        
-        return HTTPRequest(method: String(parts[0]), path: String(parts[1]), headers: headers, body: Data(body))
-    }
-}
-
-struct OpenAICompatibleChatResponse: Encodable {
+struct OpenAICompatibleResponse: Encodable {
     let id: String
     let object: String
     let created: Int
     let model: String
-    let choices: [OpenAICompatibleChatChoice]
+    let choices: [OpenAICompatibleChoice]
 }
 
-struct OpenAICompatibleChatChoice: Encodable {
+struct OpenAICompatibleChoice: Encodable {
     let index: Int
-    let message: OpenAICompatibleChatMessage
-    let finishReason: String
-
-    enum CodingKeys: String, CodingKey {
-        case index, message
-        case finishReason = "finish_reason"
-    }
+    let message: OpenAICompatibleMessage
+    let finish_reason: String
 }
 
-struct OpenAICompatibleChatMessage: Encodable {
+struct OpenAICompatibleMessage: Encodable {
     let role: String
     let content: String
 }
