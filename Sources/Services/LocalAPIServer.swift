@@ -11,13 +11,10 @@ struct HTTPRequest: Sendable {
         guard let requestString = String(data: data, encoding: .utf8) else { return nil }
         let lines = requestString.components(separatedBy: "\r\n")
         guard !lines.isEmpty else { return nil }
-
         let firstLineParts = lines[0].components(separatedBy: " ")
         guard firstLineParts.count >= 2 else { return nil }
-
         let method = firstLineParts[0]
         let path = firstLineParts[1]
-
         var headers: [String: String] = [:]
         var bodyStartIndex = 0
         for (index, line) in lines.enumerated().dropFirst() {
@@ -32,10 +29,8 @@ struct HTTPRequest: Sendable {
                 headers[key] = value
             }
         }
-
         let bodyString = lines.dropFirst(bodyStartIndex).joined(separator: "\r\n")
         let body = bodyString.data(using: .utf8) ?? Data()
-
         return HTTPRequest(method: method, path: path, headers: headers, body: body)
     }
 }
@@ -44,7 +39,6 @@ actor LocalAPIServer {
     enum ServerError: LocalizedError {
         case alreadyRunning
         case invalidRequest
-
         var errorDescription: String? {
             switch self {
             case .alreadyRunning: return "The local API server is already running."
@@ -79,14 +73,12 @@ actor LocalAPIServer {
         let port = NWEndpoint.Port(rawValue: configuration.port) ?? 8080
         let listener = try NWListener(using: .tcp, on: port)
         self.listener = listener
-
         listener.newConnectionHandler = { [weak self] connection in
             connection.start(queue: .global(qos: .utility))
             Task { [weak self] in
                 await self?.receiveLoop(on: connection)
             }
         }
-
         listener.stateUpdateHandler = { [weak self] state in
             Task {
                 switch state {
@@ -151,12 +143,21 @@ actor LocalAPIServer {
                 let payload: [String: Any] = ["status": "ok"]
                 let body = try JSONSerialization.data(withJSONObject: payload)
                 try await sendJSON(body, status: "200 OK", on: connection)
+
             case ("GET", "/v1/models"):
-                let snap = await MainActor.run { (appModel?.installedModels ?? [], appModel?.settings ?? AppSettings()) }
-                let models = appModel?.apiModelInventory(installedModels: snap.0, settings: snap.1) ?? []
+                // Capture appModel reference on this actor, then hop to MainActor to read
+                // its isolated properties and call the nonisolated inventory helper.
+                let localModel = appModel
+                let models = await MainActor.run {
+                    localModel?.apiModelInventory(
+                        installedModels: localModel?.installedModels ?? [],
+                        settings: localModel?.settings ?? AppSettings()
+                    ) ?? []
+                }
                 let payload: [String: Any] = ["object": "list", "data": models]
                 let body = try JSONSerialization.data(withJSONObject: payload)
                 try await sendJSON(body, status: "200 OK", on: connection)
+
             case ("POST", "/v1/chat/completions"):
                 let decoded = try JSONDecoder().decode(ChatRequest.self, from: request.body)
                 if decoded.stream == true {
@@ -207,6 +208,7 @@ actor LocalAPIServer {
                     let body = try JSONEncoder().encode(response)
                     try await sendJSON(body, status: "200 OK", on: connection)
                 }
+
             default:
                 let body = try JSONSerialization.data(withJSONObject: ["error": "Not Found"])
                 try await sendJSON(body, status: "404 Not Found", on: connection)
