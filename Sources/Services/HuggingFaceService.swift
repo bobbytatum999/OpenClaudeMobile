@@ -120,10 +120,13 @@ struct HuggingFaceService {
         let tempSession = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
 
         let temporaryURL: URL = try await withCheckedThrowingContinuation { continuation in
-            var isResumed = false
+            let isResumed = NSRecursiveLock()
+            var resumed = false
             delegate.onCompletion = { result in
-                guard !isResumed else { return }
-                isResumed = true
+                isResumed.lock()
+                defer { isResumed.unlock() }
+                guard !resumed else { return }
+                resumed = true
                 continuation.resume(with: result)
             }
             let task = tempSession.downloadTask(with: request)
