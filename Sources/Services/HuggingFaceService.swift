@@ -73,9 +73,9 @@ struct HuggingFaceService {
         return URL(string: "https://huggingface.co/\(repoID)/resolve/main/\(escaped)?download=true")!
     }
 
-    private class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
-        var onProgress: ((Double) -> Void)?
-        var onCompletion: ((Result<URL, Error>) -> Void)?
+    private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+        var onProgress: (@Sendable (Double) -> Void)?
+        var onCompletion: (@Sendable (Result<URL, Error>) -> Void)?
         private var temporaryDestination: URL?
 
         func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
@@ -104,7 +104,7 @@ struct HuggingFaceService {
         }
     }
 
-    func downloadGGUF(repoID: String, sibling: HuggingFaceSibling, token: String, onProgress: @escaping (Double) -> Void) async throws -> InstalledModel {
+    func downloadGGUF(repoID: String, sibling: HuggingFaceSibling, token: String, onProgress: @escaping @Sendable (Double) -> Void) async throws -> InstalledModel {
         let destinationDirectory = AppPersistence.modelsDirectory.appendingPathComponent(repoID.replacingOccurrences(of: "/", with: "__"), isDirectory: true)
         try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
         let destination = destinationDirectory.appendingPathComponent(sibling.filename)
