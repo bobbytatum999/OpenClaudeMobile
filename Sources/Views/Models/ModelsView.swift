@@ -2,184 +2,69 @@ import SwiftUI
 
 struct ModelsView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var searchText = ""
+    @State private var isSearching = false
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                searchCard
-                if let details = model.selectedModelDetails {
-                    detailCard(details)
-                }
-                installedCard
-            }
-            .padding()
-        }
-        .navigationTitle("Models")
-        .task {
-            if model.searchedModels.isEmpty {
-                await model.searchHuggingFace()
-            }
-        }
-    }
-
-    private var searchCard: some View {
-        GlassCard {
-            VStack(alignment: .leading, spacing: 14) {
-                searchHeader
-                searchResults
-            }
-        }
-    }
-
-    private var searchHeader: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Hugging Face GGUF Browser")
-                .font(.title3.weight(.semibold))
-            TextField("Search models", text: $model.searchQuery)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .padding(12)
-                .background { RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.regularMaterial) }
-            HStack {
-                Button {
-                    Task { await model.searchHuggingFace() }
-                } label: {
-                    if model.isSearchingModels {
-                        ProgressView()
+        NavigationStack {
+            List {
+                Section("Installed Models") {
+                    if model.installedModels.isEmpty {
+                        Text("No models installed.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     } else {
-                        Label("Search", systemImage: "magnifyingglass")
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                Spacer()
-                Text("\(model.searchedModels.count) result(s)")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var searchResults: some View {
-        ForEach(model.searchedModels.prefix(8)) { item in
-            Button {
-                model.selectedModelDetails = item
-            } label: {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(item.id)
-                            .font(.headline)
-                            .multilineTextAlignment(.leading)
-                        HStack(spacing: 10) {
-                            if let tag = item.pipelineTag {
-                                Label(tag, systemImage: "tag.fill")
-                            }
-                            if let downloads = item.downloads {
-                                Label("\(downloads)", systemImage: "arrow.down.circle")
-                            }
-                            Text("GGUF \(item.ggufFiles.count)")
-                        }
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                }
-                .padding(14)
-                .background {
-                    if model.selectedModelDetails?.id == item.id {
-                        RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.tint.opacity(0.16))
-                    } else {
-                        RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.regularMaterial)
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    private func detailCard(_ details: HuggingFaceModelSummary) -> some View {
-        GlassCard {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(details.id)
-                    .font(.title3.weight(.semibold))
-                HStack(spacing: 14) {
-                    Label("GGUF: \(details.ggufFiles.count)", systemImage: "shippingbox.fill")
-                    Label("Likes: \(details.likes ?? 0)", systemImage: "heart.fill")
-                    Label(details.privateRepo ? "Private" : "Public", systemImage: details.privateRepo ? "lock.fill" : "lock.open.fill")
-                }
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                if details.ggufFiles.isEmpty {
-                    Text("No GGUF files were advertised in this repo's file list.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(details.ggufFiles) { sibling in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(sibling.filename)
-                                    .font(.headline)
-                                Text(sibling.rfilename)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                            }
-                            Spacer()
-                            Button {
-                                Task { await model.install(details, sibling: sibling) }
-                            } label: {
-                                if model.isDownloadingModel {
-                                    if let p = model.downloadProgress {
-                                        Text("\(Int(p * 100))%")
-                                            .font(.caption.bold())
-                                            .monospacedDigit()
-                                    } else {
-                                        ProgressView()
-                                    }
-                                } else {
-                                    Label("Install", systemImage: "arrow.down.to.line")
+                        ForEach(model.installedModels) { installed in
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(installed.displayName)
+                                        .font(.headline)
+                                    Text(installed.repoID)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if model.settings.selectedLocalModelID == installed.id {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(Color.green)
                                 }
                             }
-                            .buttonStyle(.borderedProminent)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                model.settings.selectedLocalModelID = installed.id
+                            }
                         }
-                        .padding(12)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    }
+                }
+                
+                Section("Available on Hugging Face") {
+                    ForEach(model.hfModels) { hf in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(hf.displayName)
+                                .font(.subheadline.weight(.semibold))
+                            Text(hf.id)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            
+                            HStack {
+                                Label("\(hf.likes ?? 0)", systemImage: "heart.fill")
+                                Label("\(hf.downloads ?? 0)", systemImage: "arrow.down.circle.fill")
+                                Spacer()
+                                Button("Download") {
+                                    // Implementation in AppModel
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                            }
+                            .font(.caption2)
+                            .padding(.top, 4)
+                        }
+                        .padding(.vertical, 4)
                     }
                 }
             }
-        }
-    }
-
-    private var installedCard: some View {
-        GlassCard {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Installed Local Models")
-                    .font(.title3.weight(.semibold))
-                if model.installedModels.isEmpty {
-                    Text("No GGUF models installed yet.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(model.installedModels) { item in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(item.filename)
-                                    .font(.headline)
-                                Text(item.repoID)
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button(model.settings.selectedLocalModelID == item.id ? "Selected" : "Use") {
-                                model.settings.selectedRuntime = .local
-                                model.settings.selectedLocalModelID = item.id
-                                model.saveSettings()
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(model.settings.selectedLocalModelID == item.id ? .green : .accentColor)
-                        }
-                        .padding(12)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    }
-                }
-            }
+            .navigationTitle("Models")
+            .searchable(text: $searchText)
         }
     }
 }

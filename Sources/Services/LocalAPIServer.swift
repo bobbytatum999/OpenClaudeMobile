@@ -1,6 +1,44 @@
 import Foundation
 import Network
 
+// Minimal HTTP Request parser for local API
+struct HTTPRequest: Sendable {
+    let method: String
+    let path: String
+    let headers: [String: String]
+    let body: Data
+
+    static func parse(from data: Data) -> HTTPRequest? {
+        guard let requestString = String(data: data, encoding: .utf8) else { return nil }
+        let lines = requestString.components(separatedBy: "\r\n")
+        guard lines.count > 0 else { return nil }
+
+        let firstLineParts = lines[0].components(separatedBy: " ")
+        guard firstLineParts.count >= 2 else { return nil }
+
+        let method = firstLineParts[0]
+        let path = firstLineParts[1]
+
+        var headers: [String: String] = [:]
+        var bodyStartIndex = 0
+        for (index, line) in lines.enumerated().dropFirst() {
+            if line.isEmpty {
+                bodyStartIndex = index + 1
+                break
+            }
+            let headerParts = line.components(separatedBy: ": ")
+            if headerParts.count == 2 {
+                headers[headerParts[0]] = headerParts[1]
+            }
+        }
+
+        let bodyString = lines.dropFirst(bodyStartIndex).joined(separator: "\r\n")
+        let body = bodyString.data(using: .utf8) ?? Data()
+
+        return HTTPRequest(method: method, path: path, headers: headers, body: body)
+    }
+}
+
 actor LocalAPIServer {
     enum ServerError: LocalizedError {
         case alreadyRunning
@@ -76,16 +114,14 @@ actor LocalAPIServer {
         var buffer = Data()
         while true {
             do {
-                let data = try await receive(on: connection)
-                if let data = data {
-                    buffer.append(data)
-                    if let request = HTTPRequest.parse(from: buffer) {
-                        await handle(request: request, on: connection)
-                        buffer.removeAll() 
-                    }
-                } else {
+                guard let data = try await receive(on: connection) else {
                     connection.cancel()
                     break
+                }
+                buffer.append(data)
+                if let request = HTTPRequest.parse(from: buffer) {
+                    await handle(request: request, on: connection)
+                    buffer.removeAll() 
                 }
             } catch {
                 connection.cancel()
