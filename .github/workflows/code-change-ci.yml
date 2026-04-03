@@ -1,0 +1,64 @@
+name: Code Change CI
+
+on:
+  push:
+    branches:
+      - "**"
+    paths:
+      - "Sources/**"
+      - "Tests/**"
+      - "Resources/**"
+      - "project.yml"
+      - ".github/workflows/**"
+  pull_request:
+    paths:
+      - "Sources/**"
+      - "Tests/**"
+      - "Resources/**"
+      - "project.yml"
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+jobs:
+  change-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Show triggering commit
+        run: |
+          echo "Event: ${{ github.event_name }}"
+          echo "Ref:   ${{ github.ref }}"
+          echo "SHA:   ${{ github.sha }}"
+
+      - name: List changed files (push)
+        if: github.event_name == 'push'
+        run: |
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "Initial push detected; showing files in latest commit."
+            git show --name-only --pretty="" "$AFTER"
+          else
+            git diff --name-only "$BEFORE" "$AFTER"
+          fi
+
+      - name: List changed files (pull request)
+        if: github.event_name == 'pull_request'
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          git fetch --no-tags --prune --depth=1 origin "$BASE" "$HEAD"
+          git diff --name-only "$BASE" "$HEAD"
+
+      - name: Basic repo sanity checks
+        run: |
+          test -f project.yml
+          test -d Sources
+          test -d Tests
+          echo "Sanity checks passed."
