@@ -68,6 +68,7 @@ final class AppModel: ObservableObject {
         settings = AppPersistence.load(AppSettings.self, from: AppPersistence.settingsURL, default: .default)
         importedDocuments = AppPersistence.load([ImportedDocument].self, from: AppPersistence.documentsURL, default: [])
         installedModels = scanInstalledModels()
+        migrateLegacySelectedModelIDIfNeeded()
         serverBaseURL = "http://\(settings.server.host):\(settings.server.port)"
         await server.attach(appModel: self)
         if settings.server.autoStart {
@@ -385,7 +386,7 @@ final class AppModel: ObservableObject {
         if activeRuntime == .local {
             let prompt = PromptBuilder.buildPrompt(messages: messages, selectedDocuments: selectedDocs, systemPrompt: activeRemote.systemPrompt)
             let selectedID = localModelID ?? settings.selectedLocalModelID
-            let model = installedModels.first { $0.id == selectedID } ?? installedModels.first
+            let model = installedModels.first { modelIDMatches($0, selectedID: selectedID) } ?? installedModels.first
             guard let model else { throw LocalModelEngine.EngineError.noModelSelected }
             return local.generate(prompt: prompt, modelURL: model.fileURL, maxTokens: activeRemote.maxTokens, temperature: Float(activeRemote.temperature))
         }
@@ -414,7 +415,20 @@ final class AppModel: ObservableObject {
 
     var selectedLocalModel: InstalledModel? {
         guard let id = settings.selectedLocalModelID else { return nil }
-        return installedModels.first { $0.id == id }
+        return installedModels.first { modelIDMatches($0, selectedID: id) }
+    }
+
+    private func modelIDMatches(_ model: InstalledModel, selectedID: String?) -> Bool {
+        guard let selectedID else { return false }
+        return selectedID == model.id || selectedID == model.filename
+    }
+
+    private func migrateLegacySelectedModelIDIfNeeded() {
+        guard let selected = settings.selectedLocalModelID else { return }
+        guard installedModels.first(where: { $0.id == selected }) == nil else { return }
+        guard let migrated = installedModels.first(where: { $0.filename == selected }) else { return }
+        settings.selectedLocalModelID = migrated.id
+        saveSettings()
     }
 
     private func scanInstalledModels() -> [InstalledModel] {
@@ -428,7 +442,8 @@ final class AppModel: ObservableObject {
         return enumerator.compactMap { $0 as? URL }
             .filter { $0.pathExtension.lowercased() == "gguf" }
             .compactMap { url in
-                let repoFolder = url.deletingLastPathComponent().lastPathComponent
+                let relativeDir = url.deletingLastPathComponent().path.replacingOccurrences(of: dir.path + "/", with: "")
+                let repoFolder = relativeDir.isEmpty ? "local" : relativeDir.components(separatedBy: "/").first ?? "local"
                 let repoID = repoFolder.replacingOccurrences(of: "__", with: "/")
                 let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize.map { Int64($0) } ?? 0
                 return InstalledModel(
@@ -440,6 +455,7 @@ final class AppModel: ObservableObject {
                     installedAt: (try? url.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .now
                 )
             }
+            .sorted { $0.installedAt > $1.installedAt }
     }
 }
 
