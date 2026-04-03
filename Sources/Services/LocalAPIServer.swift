@@ -8,20 +8,20 @@ struct HTTPRequest: Sendable {
     let body: Data
 
     static func parse(from data: Data) -> HTTPRequest? {
-        guard let requestString = String(data: data, encoding: .utf8) else { return nil }
-        let lines = requestString.components(separatedBy: "\r\n")
-        guard !lines.isEmpty else { return nil }
-        let firstLineParts = lines[0].components(separatedBy: " ")
+        guard let headerBoundary = data.range(of: Data("\r\n\r\n".utf8)) else { return nil }
+
+        let headerData = data.subdata(in: 0..<headerBoundary.lowerBound)
+        guard let headerString = String(data: headerData, encoding: .utf8) else { return nil }
+        let lines = headerString.components(separatedBy: "\r\n")
+        guard let requestLine = lines.first else { return nil }
+
+        let firstLineParts = requestLine.components(separatedBy: " ")
         guard firstLineParts.count >= 2 else { return nil }
         let method = firstLineParts[0]
         let path = firstLineParts[1]
+
         var headers: [String: String] = [:]
-        var bodyStartIndex = 0
-        for (index, line) in lines.enumerated().dropFirst() {
-            if line.isEmpty {
-                bodyStartIndex = index + 1
-                break
-            }
+        for line in lines.dropFirst() {
             // FIX: split on first ": " only so header values containing colons are preserved
             if let colonRange = line.range(of: ": ") {
                 let key = String(line[line.startIndex..<colonRange.lowerBound])
@@ -29,8 +29,15 @@ struct HTTPRequest: Sendable {
                 headers[key] = value
             }
         }
-        let bodyString = lines.dropFirst(bodyStartIndex).joined(separator: "\r\n")
-        let body = bodyString.data(using: .utf8) ?? Data()
+
+        let bodyStart = headerBoundary.upperBound
+        let declaredBodyLength = headers.first { $0.key.lowercased() == "content-length" }
+            .flatMap { Int($0.value.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
+        let availableBodyLength = data.count - bodyStart
+        guard availableBodyLength >= declaredBodyLength else { return nil }
+
+        let bodyEnd = bodyStart + declaredBodyLength
+        let body = declaredBodyLength > 0 ? data.subdata(in: bodyStart..<bodyEnd) : Data()
         return HTTPRequest(method: method, path: path, headers: headers, body: body)
     }
 }
