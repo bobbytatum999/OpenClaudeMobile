@@ -60,9 +60,9 @@ enum RuntimeSelection: String, Codable, CaseIterable, Identifiable {
 }
 
 struct RemoteProviderConfiguration: Codable {
-    var baseURL: String = "https://api.anthropic.com/v1"
+    var baseURL: String = "https://api.openai.com/v1"
     var apiKey: String = ""
-    var model: String = "claude-3-5-sonnet-20240620"
+    var model: String = "gpt-4o-mini"
     var systemPrompt: String = "You are OpenClaude, a helpful AI assistant running on device. Be concise, accurate, and helpful."
     var temperature: Double = 0.7
     var maxTokens: Int = 4096
