@@ -17,6 +17,9 @@ struct ChatView: View {
                 Divider()
                 messageList
                 contextBar
+                if !model.toolTraceRows.isEmpty {
+                    toolTraceBar
+                }
                 Divider()
                 inputBar
             }
@@ -156,9 +159,38 @@ struct ChatView: View {
                     .foregroundColor(model.settings.selectedRuntime == .local ? .green : .blue)
                     .clipShape(Capsule())
             }
+
+            Text(model.settings.selectedRuntime == .local ? (model.selectedLocalModel?.displayName ?? "No model") : model.settings.remote.model)
+                .font(.caption2.monospaced())
+                .lineLimit(1)
+                .foregroundColor(.secondary)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
+        .background(Color(.secondarySystemBackground))
+    }
+
+    private var toolTraceBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(model.toolTraceRows) { trace in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label(trace.name, systemImage: trace.isError ? "exclamationmark.triangle.fill" : "wrench.and.screwdriver.fill")
+                            .font(.caption2.weight(.semibold))
+                        Text(trace.output)
+                            .font(.caption2)
+                            .lineLimit(2)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(trace.isError ? Color.red.opacity(0.12) : Color.blue.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+        }
         .background(Color(.secondarySystemBackground))
     }
 
@@ -286,6 +318,14 @@ struct ChatView: View {
                     Image(systemName: "arrow.clockwise")
                 }
                 .accessibilityLabel("Regenerate")
+            }
+            if !model.isSending, model.selectedSession?.messages.last(where: { $0.role == .user }) != nil {
+                Button {
+                    Task { await model.retryLastUserMessage() }
+                } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                }
+                .accessibilityLabel("Retry last user message")
             }
             // Export
             if model.selectedSession?.messages.isEmpty == false {

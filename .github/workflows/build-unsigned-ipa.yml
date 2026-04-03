@@ -8,16 +8,18 @@ on:
 
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: macos-latest
     permissions:
       contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select Xcode 26
+      - name: Select newest available Xcode
         run: |
-          sudo xcode-select -s /Applications/Xcode_26.0.app || sudo xcode-select -s /Applications/Xcode.app
+          latest_xcode="$(ls -d /Applications/Xcode*.app | sort -V | tail -n 1)"
+          echo "Using Xcode at: $latest_xcode"
+          sudo xcode-select -s "$latest_xcode"
           xcodebuild -version
 
       - name: Install XcodeGen

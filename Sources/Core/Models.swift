@@ -41,6 +41,7 @@ struct AppSettings: Codable {
     var selectedLocalModelID: String?
     var selectedDocumentIDs: Set<UUID> = []
     var remote = RemoteProviderConfiguration()
+    var localSampling = SamplingConfiguration.default
     var server = ServerConfiguration()
     var hapticFeedback: Bool = true
     var streamingSpeed: Bool = true
@@ -206,6 +207,15 @@ struct ImportedDocument: Identifiable, Codable {
     var fileURL: URL {
         URL(fileURLWithPath: localPath)
     }
+}
+
+struct ToolTraceRow: Identifiable, Codable {
+    var id = UUID()
+    let name: String
+    let input: [String: String]
+    let output: String
+    let isError: Bool
+    var createdAt = Date()
 }
 
 // MARK: - Generation Stats

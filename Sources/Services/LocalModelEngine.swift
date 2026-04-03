@@ -1,6 +1,13 @@
 import Foundation
 import LlamaSwift
 
+struct LocalGenerationRequest: Sendable {
+    let prompt: String
+    let modelURL: URL
+    let maxTokens: Int
+    let sampling: SamplingConfiguration
+}
+
 final class LocalModelEngine: @unchecked Sendable {
     enum EngineError: LocalizedError {
         case noModelSelected
@@ -36,13 +43,13 @@ final class LocalModelEngine: @unchecked Sendable {
         }
     }
 
-    func generate(prompt: String, modelURL: URL, maxTokens: Int = 256, temperature: Float = 0.7) -> AsyncThrowingStream<String, Error> {
+    func generate(request: LocalGenerationRequest) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 queue.async { [self] in
                     do {
-                        try self._ensureModelLoaded(at: modelURL)
-                        try self._generateUnsafe(prompt: prompt, maxTokens: maxTokens, temperature: temperature) { token in
+                        try self._ensureModelLoaded(at: request.modelURL)
+                        try self._generateUnsafe(request: request) { token in
                             continuation.yield(token)
                         }
                         continuation.finish()
@@ -53,6 +60,10 @@ final class LocalModelEngine: @unchecked Sendable {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    func generate(prompt: String, modelURL: URL, maxTokens: Int = 256, temperature: Float = 0.7) -> AsyncThrowingStream<String, Error> {
+        generate(request: .init(prompt: prompt, modelURL: modelURL, maxTokens: maxTokens, sampling: .init(temperature: temperature)))
     }
 
     private func _ensureModelLoaded(at url: URL) throws {
@@ -75,7 +86,7 @@ final class LocalModelEngine: @unchecked Sendable {
         vocab = llama_model_get_vocab(modelPointer)
 
         var contextParams = llama_context_default_params()
-        contextParams.n_ctx = 4096
+        contextParams.n_ctx = 8192
         contextParams.n_batch = 512
 
         let contextPointer = llama_init_from_model(modelPointer, contextParams)
@@ -90,16 +101,14 @@ final class LocalModelEngine: @unchecked Sendable {
         context = nil; model = nil; vocab = nil; loadedPath = nil
     }
 
-    private func _generateUnsafe(prompt: String, maxTokens: Int, temperature: Float, onToken: (String) -> Void) throws {
-        guard let model, let context, let vocab else { throw EngineError.noModelSelected }
+    private func _generateUnsafe(request: LocalGenerationRequest, onToken: (String) -> Void) throws {
+        guard let context, let vocab else { throw EngineError.noModelSelected }
 
-        let utf8Count = prompt.utf8.count
-        var promptTokens = [llama_token](repeating: 0, count: utf8Count + 16)
-        let tokenCount: Int32 = prompt.withCString { cString in
-            llama_tokenize(vocab, cString, Int32(utf8Count), &promptTokens, Int32(promptTokens.count), true, true)
+        var tokens = try tokenize(request.prompt, vocab: vocab)
+        let maxContext = max(Int(llama_n_ctx(context)) - 256, 1024)
+        if tokens.count > maxContext {
+            tokens = Array(tokens.suffix(maxContext))
         }
-        guard tokenCount > 0 else { throw EngineError.tokenizationFailed }
-        let tokens = Array(promptTokens.prefix(Int(tokenCount)))
 
         var batch = llama_batch_init(512, 0, 1)
         defer { llama_batch_free(batch) }
@@ -109,50 +118,108 @@ final class LocalModelEngine: @unchecked Sendable {
         }
         guard llama_decode(context, batch) == 0 else { throw EngineError.decodeFailed }
 
-        var n_cur = Int32(tokens.count)
-        let n_vocab = Int(llama_vocab_n_tokens(vocab))
+        var nCur = Int32(tokens.count)
+        let nVocab = Int(llama_vocab_n_tokens(vocab))
+        var generated = ""
+        var recentTokens = Array(tokens.suffix(128))
 
-        for _ in 0..<maxTokens {
-            let logits = llama_get_logits_ith(context, batch.n_tokens - 1)!
-
-            // FIX: temperature sampling instead of pure greedy argmax
-            let next: llama_token
-            if temperature <= 0 {
-                // greedy
-                var best: llama_token = 0
-                var bestVal = logits[0]
-                for i in 1..<n_vocab {
-                    if logits[i] > bestVal { bestVal = logits[i]; best = llama_token(i) }
-                }
-                next = best
-            } else {
-                // softmax with temperature
-                var scaled = (0..<n_vocab).map { logits[$0] / temperature }
-                let maxVal = scaled.max() ?? 0
-                var exps = scaled.map { expf($0 - maxVal) }
-                let sum = exps.reduce(0, +)
-                exps = exps.map { $0 / sum }
-
-                // sample from distribution
-                var r = Float.random(in: 0..<1)
-                var chosen = n_vocab - 1
-                for i in 0..<n_vocab {
-                    r -= exps[i]
-                    if r <= 0 { chosen = i; break }
-                }
-                next = llama_token(chosen)
+        for _ in 0..<request.maxTokens {
+            guard let logitsPointer = llama_get_logits_ith(context, batch.n_tokens - 1) else {
+                throw EngineError.decodeFailed
             }
-
+            let next = sampleToken(
+                logits: logitsPointer,
+                nVocab: nVocab,
+                sampling: request.sampling,
+                recentTokens: recentTokens
+            )
             if next == llama_vocab_eos(vocab) { break }
 
             let piece = tokenToPiece(vocab: vocab, token: next)
+            generated += piece
             onToken(piece)
 
+            if request.sampling.stopSequences.contains(where: { generated.hasSuffix($0) }) {
+                break
+            }
+
+            recentTokens.append(next)
+            if recentTokens.count > 256 { recentTokens.removeFirst(recentTokens.count - 256) }
+
             batch.n_tokens = 0
-            llama_batch_add_to_batch(&batch, next, n_cur, [0], true)
-            n_cur += 1
+            llama_batch_add_to_batch(&batch, next, nCur, [0], true)
+            nCur += 1
             guard llama_decode(context, batch) == 0 else { throw EngineError.decodeFailed }
         }
+    }
+
+    private func tokenize(_ prompt: String, vocab: OpaquePointer) throws -> [llama_token] {
+        let utf8Count = prompt.utf8.count
+        var promptTokens = [llama_token](repeating: 0, count: utf8Count + 32)
+        let tokenCount: Int32 = prompt.withCString { cString in
+            llama_tokenize(vocab, cString, Int32(utf8Count), &promptTokens, Int32(promptTokens.count), true, true)
+        }
+        guard tokenCount > 0 else { throw EngineError.tokenizationFailed }
+        return Array(promptTokens.prefix(Int(tokenCount)))
+    }
+
+    private func sampleToken(
+        logits: UnsafePointer<Float>,
+        nVocab: Int,
+        sampling: SamplingConfiguration,
+        recentTokens: [llama_token]
+    ) -> llama_token {
+        if sampling.temperature <= 0 {
+            return argmax(logits: logits, nVocab: nVocab)
+        }
+
+        var scored: [(id: Int, p: Float)] = []
+        scored.reserveCapacity(nVocab)
+
+        let maxLogit = (0..<nVocab).map { logits[$0] }.max() ?? 0
+        for i in 0..<nVocab {
+            var logit = logits[i] - maxLogit
+            if recentTokens.contains(llama_token(i)) {
+                logit /= max(sampling.repetitionPenalty, 1.0)
+            }
+            let prob = expf(logit / sampling.temperature)
+            scored.append((i, prob))
+        }
+
+        let topK = max(sampling.topK, 1)
+        scored.sort { $0.p > $1.p }
+        if scored.count > topK { scored = Array(scored.prefix(topK)) }
+
+        let sum = scored.reduce(Float(0)) { $0 + $1.p }
+        var normalized = scored.map { ($0.id, $0.p / max(sum, .leastNonzeroMagnitude)) }
+
+        var cumulative: Float = 0
+        var nucleus: [(Int, Float)] = []
+        for (id, p) in normalized {
+            cumulative += p
+            nucleus.append((id, p))
+            if cumulative >= sampling.topP { break }
+        }
+
+        let nucleusSum = nucleus.reduce(Float(0)) { $0 + $1.1 }
+        normalized = nucleus.map { ($0.0, $0.1 / max(nucleusSum, .leastNonzeroMagnitude)) }
+
+        var r = Float.random(in: 0..<1)
+        for (id, p) in normalized {
+            r -= p
+            if r <= 0 { return llama_token(id) }
+        }
+        return llama_token(normalized.last?.0 ?? scored[0].id)
+    }
+
+    private func argmax(logits: UnsafePointer<Float>, nVocab: Int) -> llama_token {
+        var best: llama_token = 0
+        var bestVal = logits[0]
+        for i in 1..<nVocab where logits[i] > bestVal {
+            bestVal = logits[i]
+            best = llama_token(i)
+        }
+        return best
     }
 
     private func tokenToPiece(vocab: OpaquePointer, token: llama_token) -> String {
