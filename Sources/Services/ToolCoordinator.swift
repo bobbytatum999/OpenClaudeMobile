@@ -1,21 +1,21 @@
 import Foundation
 
-struct ToolCall: Codable, Sendable {
+struct ToolCall: Codable {
     let name: String
     let arguments: [String: String]
 }
 
-struct ToolResult: Sendable {
+struct ToolResult {
     let name: String
     let output: String
     let isError: Bool
 }
 
-struct ToolDefinition: Sendable {
+struct ToolDefinition {
     let name: String
     let description: String
     let argumentSchema: [String: String]
-    let handler: @Sendable ([String: String]) async throws -> String
+    let handler: ([String: String]) async throws -> String
 }
 
 enum ToolCoordinatorError: LocalizedError {
