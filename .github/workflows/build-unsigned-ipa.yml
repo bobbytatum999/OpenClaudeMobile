@@ -9,11 +9,13 @@ on:
 jobs:
   build:
     runs-on: macos-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     permissions:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Select newest available Xcode
         run: |
@@ -41,18 +43,20 @@ jobs:
 
       - name: Archive unsigned iPhone build
         run: |
+          set -o pipefail
           xcodebuild archive \
             -project OpenClaudeMobile.xcodeproj \
             -scheme OpenClaudeMobile \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -archivePath build/OpenClaudeMobile.xcarchive \
+            -resultBundlePath build/OpenClaudeMobile.xcresult \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \
             ONLY_ACTIVE_ARCH=NO \
             -allowProvisioningUpdates \
-            clean
+            clean | tee build/xcodebuild-archive.log
 
       - name: Package unsigned IPA
         run: |
@@ -69,3 +73,13 @@ jobs:
           path: |
             build/OpenClaudeMobile.xcarchive
             build/OpenClaudeMobile-unsigned.ipa
+            build/xcodebuild-archive.log
+
+      - name: Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenClaudeMobile-build-diagnostics
+          path: |
+            build/xcodebuild-archive.log
+            build/OpenClaudeMobile.xcresult
