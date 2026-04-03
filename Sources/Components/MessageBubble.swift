@@ -1,4 +1,5 @@
 import SwiftUI
+import MarkdownUI
 
 struct MessageBubble: View {
     let message: ChatMessage
@@ -8,16 +9,36 @@ struct MessageBubble: View {
             if message.role == .user { Spacer(minLength: 40) }
             
             VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 4) {
-                Text(message.content.isEmpty ? "Thinking..." : message.content)
-                    .textSelection(.enabled)
-                    .font(.system(.body, design: .rounded))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .foregroundStyle(message.role == .user ? .white : .primary)
-                    .background {
-                        bubbleShape(for: message.role)
-                            .fill(bubbleBackground(for: message.role))
+                Group {
+                    if message.role == .assistant || message.role == .tool {
+                        Markdown(message.content.isEmpty ? "Thinking..." : message.content)
+                            .markdownTheme(.gitHub)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                    } else {
+                        Text(message.content.isEmpty ? "Thinking..." : message.content)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                            .foregroundStyle(.white)
                     }
+                }
+                .textSelection(.enabled)
+                .font(.system(.body, design: .rounded))
+                .background {
+                    bubbleShape(for: message.role)
+                        .fill(bubbleBackground(for: message.role))
+                }
+                .overlay(alignment: .topTrailing) {
+                    Button {
+                        UIPasteboard.general.string = message.content
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 11, weight: .semibold))
+                            .padding(6)
+                            .background(.thinMaterial, in: Circle())
+                    }
+                    .padding(6)
+                }
                 
                 Text(message.updatedAt.formatted(date: .omitted, time: .shortened))
                     .font(.system(size: 9))
@@ -44,6 +65,8 @@ struct MessageBubble: View {
     private func bubbleBackground(for role: ChatMessage.Role) -> AnyShapeStyle {
         if role == .user {
             return AnyShapeStyle(Color.accentColor)
+        } else if role == .tool {
+            return AnyShapeStyle(Color.orange.opacity(0.15))
         } else {
             return AnyShapeStyle(.ultraThinMaterial)
         }

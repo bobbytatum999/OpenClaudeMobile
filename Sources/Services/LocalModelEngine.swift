@@ -2,6 +2,22 @@ import Foundation
 import LlamaSwift
 
 final class LocalModelEngine: @unchecked Sendable {
+    struct SamplingParameters: Sendable {
+        let temperature: Float
+        let topK: Int
+        let topP: Float
+        let repetitionPenalty: Float
+        let stopSequences: [String]
+
+        static let `default` = SamplingParameters(
+            temperature: 0.7,
+            topK: 40,
+            topP: 0.9,
+            repetitionPenalty: 1.1,
+            stopSequences: ["<|im_end|>", "</s>"]
+        )
+    }
+
     enum EngineError: LocalizedError {
         case noModelSelected
         case failedToLoadModel
@@ -36,13 +52,20 @@ final class LocalModelEngine: @unchecked Sendable {
         }
     }
 
-    func generate(prompt: String, modelURL: URL, maxTokens: Int = 256, temperature: Float = 0.7) -> AsyncThrowingStream<String, Error> {
+    func generate(prompt: String, modelURL: URL, maxTokens: Int = 256, sampling: LocalSamplingSettings) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 queue.async { [self] in
                     do {
+                        let params = SamplingParameters(
+                            temperature: sampling.temperature,
+                            topK: sampling.topK,
+                            topP: sampling.topP,
+                            repetitionPenalty: sampling.repetitionPenalty,
+                            stopSequences: sampling.stopSequences
+                        )
                         try self._ensureModelLoaded(at: modelURL)
-                        try self._generateUnsafe(prompt: prompt, maxTokens: maxTokens, temperature: temperature) { token in
+                        try self._generateUnsafe(prompt: prompt, maxTokens: maxTokens, sampling: params) { token in
                             continuation.yield(token)
                         }
                         continuation.finish()
@@ -90,7 +113,7 @@ final class LocalModelEngine: @unchecked Sendable {
         context = nil; model = nil; vocab = nil; loadedPath = nil
     }
 
-    private func _generateUnsafe(prompt: String, maxTokens: Int, temperature: Float, onToken: (String) -> Void) throws {
+    private func _generateUnsafe(prompt: String, maxTokens: Int, sampling: SamplingParameters, onToken: (String) -> Void) throws {
         guard let model, let context, let vocab else { throw EngineError.noModelSelected }
 
         let utf8Count = prompt.utf8.count
@@ -111,42 +134,25 @@ final class LocalModelEngine: @unchecked Sendable {
 
         var n_cur = Int32(tokens.count)
         let n_vocab = Int(llama_vocab_n_tokens(vocab))
+        var generatedTokens: [llama_token] = []
+        var emittedText = ""
 
         for _ in 0..<maxTokens {
             let logits = llama_get_logits_ith(context, batch.n_tokens - 1)!
-
-            // FIX: temperature sampling instead of pure greedy argmax
-            let next: llama_token
-            if temperature <= 0 {
-                // greedy
-                var best: llama_token = 0
-                var bestVal = logits[0]
-                for i in 1..<n_vocab {
-                    if logits[i] > bestVal { bestVal = logits[i]; best = llama_token(i) }
-                }
-                next = best
-            } else {
-                // softmax with temperature
-                var scaled = (0..<n_vocab).map { logits[$0] / temperature }
-                let maxVal = scaled.max() ?? 0
-                var exps = scaled.map { expf($0 - maxVal) }
-                let sum = exps.reduce(0, +)
-                exps = exps.map { $0 / sum }
-
-                // sample from distribution
-                var r = Float.random(in: 0..<1)
-                var chosen = n_vocab - 1
-                for i in 0..<n_vocab {
-                    r -= exps[i]
-                    if r <= 0 { chosen = i; break }
-                }
-                next = llama_token(chosen)
-            }
+            let next = sampleNextToken(
+                logits: logits,
+                vocabSize: n_vocab,
+                generatedTokens: generatedTokens,
+                sampling: sampling
+            )
 
             if next == llama_vocab_eos(vocab) { break }
 
             let piece = tokenToPiece(vocab: vocab, token: next)
+            emittedText += piece
+            if sampling.stopSequences.contains(where: { emittedText.hasSuffix($0) }) { break }
             onToken(piece)
+            generatedTokens.append(next)
 
             batch.n_tokens = 0
             llama_batch_add_to_batch(&batch, next, n_cur, [0], true)
@@ -161,6 +167,51 @@ final class LocalModelEngine: @unchecked Sendable {
         guard length > 0 else { return "" }
         let bytes = buffer.prefix(Int(length)).map { UInt8(bitPattern: $0) }
         return String(decoding: bytes, as: UTF8.self)
+    }
+
+    private func sampleNextToken(
+        logits: UnsafePointer<Float>,
+        vocabSize: Int,
+        generatedTokens: [llama_token],
+        sampling: SamplingParameters
+    ) -> llama_token {
+        var adjusted = (0..<vocabSize).map { logits[$0] }
+
+        if sampling.repetitionPenalty > 1.0 {
+            let recent = Set(generatedTokens.suffix(128).map(Int.init))
+            for idx in recent where idx < adjusted.count {
+                adjusted[idx] /= sampling.repetitionPenalty
+            }
+        }
+
+        let temperature = max(0.0001, sampling.temperature)
+        adjusted = adjusted.map { $0 / temperature }
+
+        let topK = min(max(1, sampling.topK), vocabSize)
+        let candidates = (0..<vocabSize).sorted { adjusted[$0] > adjusted[$1] }.prefix(topK)
+        let maxVal = candidates.map { adjusted[$0] }.max() ?? 0
+
+        var probs: [(Int, Float)] = candidates.map { idx in
+            (idx, expf(adjusted[idx] - maxVal))
+        }
+        let total = probs.reduce(Float(0)) { $0 + $1.1 }
+        guard total > 0 else { return llama_token(candidates.first ?? 0) }
+        probs = probs.map { ($0.0, $0.1 / total) }.sorted { $0.1 > $1.1 }
+
+        var cumulative: Float = 0
+        let nucleus = probs.prefix { pair in
+            cumulative += pair.1
+            return cumulative <= sampling.topP || cumulative == pair.1
+        }
+        let bucket = Array(nucleus.isEmpty ? probs : nucleus)
+
+        let r = Float.random(in: 0..<1)
+        var running: Float = 0
+        for (idx, p) in bucket {
+            running += p
+            if r <= running { return llama_token(idx) }
+        }
+        return llama_token(bucket.last?.0 ?? 0)
     }
 }
 

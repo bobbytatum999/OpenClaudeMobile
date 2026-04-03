@@ -165,6 +165,17 @@ actor LocalAPIServer {
                 let body = try JSONSerialization.data(withJSONObject: payload)
                 try await sendJSON(body, status: "200 OK", on: connection)
 
+            case ("GET", "/v1/capabilities"):
+                let payload: [String: Any] = [
+                    "canStream": true,
+                    "supportsTools": true,
+                    "supportsSystemPrompts": true,
+                    "supportsJSONMode": false,
+                    "supportsDocuments": true
+                ]
+                let body = try JSONSerialization.data(withJSONObject: payload)
+                try await sendJSON(body, status: "200 OK", on: connection)
+
             case ("POST", "/v1/chat/completions"):
                 let decoded = try JSONDecoder().decode(ChatRequest.self, from: request.body)
                 if decoded.stream == true {

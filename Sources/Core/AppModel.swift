@@ -34,6 +34,15 @@ final class AppModel: ObservableObject {
     let remote = RemoteProviderService()
     let local = LocalModelEngine()
     let server = LocalAPIServer()
+    let documentContext = DocumentContextService()
+    let toolCoordinator = ToolCoordinator()
+    lazy var conversationEngine = ConversationEngine(
+        local: local,
+        remote: remote,
+        promptBuilder: PromptBuilder.self,
+        documents: documentContext,
+        tools: toolCoordinator
+    )
 
     private let sessionsSaveDebouncer = SaveDebouncer()
     private var generationTask: Task<Void, Never>?
@@ -69,6 +78,7 @@ final class AppModel: ObservableObject {
         importedDocuments = AppPersistence.load([ImportedDocument].self, from: AppPersistence.documentsURL, default: [])
         installedModels = scanInstalledModels()
         migrateLegacySelectedModelIDIfNeeded()
+        await registerDefaultTools()
         serverBaseURL = "http://\(settings.server.host):\(settings.server.port)"
         await server.attach(appModel: self)
         if settings.server.autoStart {
@@ -141,6 +151,34 @@ final class AppModel: ObservableObject {
             statusLine = "Imported \(imported.count) file(s)"
             haptic(.success)
         } catch { statusLine = error.localizedDescription }
+    }
+
+    private func registerDefaultTools() async {
+        await toolCoordinator.register(
+            ToolDefinition(
+                name: "search_docs",
+                description: "Search imported document chunks by keyword overlap.",
+                argumentSchema: ["query": "string"]
+            ) { [weak self] args in
+                guard let self else { return "App model unavailable." }
+                let query = args["query"] ?? ""
+                let selected = self.importedDocuments.filter { self.settings.selectedDocumentIDs.contains($0.id) }
+                let hits = self.documentContext.retrieveTopChunks(query: query, documents: selected, topK: 5)
+                if hits.isEmpty { return "No matching document chunks." }
+                return hits.map { "\($0.citation)\n\($0.text)" }.joined(separator: "\n\n")
+            }
+        )
+        await toolCoordinator.register(
+            ToolDefinition(
+                name: "list_installed_models",
+                description: "List local GGUF models currently installed.",
+                argumentSchema: [:]
+            ) { [weak self] _ in
+                guard let self else { return "App model unavailable." }
+                if self.installedModels.isEmpty { return "No installed local models." }
+                return self.installedModels.map { "\($0.displayName) (\($0.formattedSize))" }.joined(separator: "\n")
+            }
+        )
     }
 
     func toggleDocumentSelection(_ document: ImportedDocument) {
@@ -219,15 +257,14 @@ final class AppModel: ObservableObject {
 
         generationTask = Task {
             do {
-                let stream = try self.currentResponseStream(from: messagesSnapshot)
-                for try await token in stream {
-                    if Task.isCancelled { break }
-                    if let liveIndex = self.sessions.firstIndex(where: { $0.id == sessionID }),
-                       let msgIndex = self.sessions[liveIndex].messages.firstIndex(where: { $0.id == assistantID }) {
-                        self.sessions[liveIndex].messages[msgIndex].content += token
-                        self.generationStats?.tokensGenerated += 1
-                    }
-                }
+                let stream = try self.conversationEngine.streamAgentResponse(
+                    messages: messagesSnapshot,
+                    settings: self.settings,
+                    installedModels: self.installedModels,
+                    selectedDocuments: self.importedDocuments.filter { self.settings.selectedDocumentIDs.contains($0.id) },
+                    localModelID: self.settings.selectedLocalModelID
+                )
+                try await self.consumeConversationEvents(stream, sessionID: sessionID, assistantID: assistantID)
                 if let liveIndex = self.sessions.firstIndex(where: { $0.id == sessionID }) {
                     if let title = self.sessions[liveIndex].messages.first(where: { $0.role == .user })?.content,
                        self.sessions[liveIndex].title == "New Chat" {
@@ -282,15 +319,14 @@ final class AppModel: ObservableObject {
 
         generationTask = Task {
             do {
-                let stream = try self.currentResponseStream(from: messagesSnapshot)
-                for try await token in stream {
-                    if Task.isCancelled { break }
-                    if let liveIndex = self.sessions.firstIndex(where: { $0.id == sessionID }),
-                       let msgIndex = self.sessions[liveIndex].messages.firstIndex(where: { $0.id == assistantID }) {
-                        self.sessions[liveIndex].messages[msgIndex].content += token
-                        self.generationStats?.tokensGenerated += 1
-                    }
-                }
+                let stream = try self.conversationEngine.streamAgentResponse(
+                    messages: messagesSnapshot,
+                    settings: self.settings,
+                    installedModels: self.installedModels,
+                    selectedDocuments: self.importedDocuments.filter { self.settings.selectedDocumentIDs.contains($0.id) },
+                    localModelID: self.settings.selectedLocalModelID
+                )
+                try await self.consumeConversationEvents(stream, sessionID: sessionID, assistantID: assistantID)
                 self.generationStats?.endTime = .now
                 self.statusLine = String(format: "%.1f tok/s", self.generationStats?.tokensPerSecond ?? 0)
                 self.persistSessions()
@@ -374,6 +410,36 @@ final class AppModel: ObservableObject {
 
     // MARK: - Private
 
+    private func consumeConversationEvents(
+        _ stream: AsyncThrowingStream<ConversationEvent, Error>,
+        sessionID: UUID,
+        assistantID: UUID
+    ) async throws {
+        for try await event in stream {
+            if Task.isCancelled { break }
+            switch event {
+            case .token(let token):
+                if let liveIndex = self.sessions.firstIndex(where: { $0.id == sessionID }),
+                   let msgIndex = self.sessions[liveIndex].messages.firstIndex(where: { $0.id == assistantID }) {
+                    self.sessions[liveIndex].messages[msgIndex].content += token
+                    self.generationStats?.tokensGenerated += 1
+                }
+            case .toolStarted(let name):
+                if let liveIndex = self.sessions.firstIndex(where: { $0.id == sessionID }) {
+                    self.sessions[liveIndex].messages.append(
+                        ChatMessage(role: .tool, content: "Running tool: \(name)")
+                    )
+                }
+            case .toolFinished(let name, let output, let isError):
+                if let liveIndex = self.sessions.firstIndex(where: { $0.id == sessionID }) {
+                    self.sessions[liveIndex].messages.append(
+                        ChatMessage(role: .tool, content: "[\(name)] \(output)", isError: isError)
+                    )
+                }
+            }
+        }
+    }
+
     private func currentResponseStream(
         from messages: [ChatMessage],
         runtime: RuntimeSelection? = nil,
@@ -381,17 +447,28 @@ final class AppModel: ObservableObject {
         remoteConfiguration: RemoteProviderConfiguration? = nil
     ) throws -> AsyncThrowingStream<String, Error> {
         let selectedDocs = importedDocuments.filter { settings.selectedDocumentIDs.contains($0.id) }
+        let retrieved = documentContext.retrieveTopChunks(
+            query: messages.last(where: { $0.role == .user })?.content ?? "",
+            documents: selectedDocs,
+            topK: settings.retrieval.topK
+        )
         let activeRuntime = runtime ?? settings.selectedRuntime
         let activeRemote = remoteConfiguration ?? settings.remote
         if activeRuntime == .local {
-            let prompt = PromptBuilder.buildPrompt(messages: messages, selectedDocuments: selectedDocs, systemPrompt: activeRemote.systemPrompt)
             let selectedID = localModelID ?? settings.selectedLocalModelID
             let model = installedModels.first { modelIDMatches($0, selectedID: selectedID) } ?? installedModels.first
             guard let model else { throw LocalModelEngine.EngineError.noModelSelected }
-            return local.generate(prompt: prompt, modelURL: model.fileURL, maxTokens: activeRemote.maxTokens, temperature: Float(activeRemote.temperature))
+            let prompt = PromptBuilder.buildPrompt(
+                template: PromptBuilder.template(forModelHint: model.filename),
+                messages: messages,
+                retrievedChunks: retrieved,
+                systemPrompt: activeRemote.systemPrompt,
+                toolDefinitions: []
+            )
+            return local.generate(prompt: prompt, modelURL: model.fileURL, maxTokens: activeRemote.maxTokens, sampling: settings.localSampling)
         }
-        let effectiveMessages = messages + selectedDocs.map {
-            ChatMessage(role: .user, content: "[Attached document: \($0.filename)]\n\($0.textPreview)")
+        let effectiveMessages = messages + retrieved.map {
+            ChatMessage(role: .user, content: "Context \($0.citation):\n\($0.text)")
         }
         return remote.stream(messages: effectiveMessages, configuration: activeRemote)
     }

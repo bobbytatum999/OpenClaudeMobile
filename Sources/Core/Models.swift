@@ -41,11 +41,25 @@ struct AppSettings: Codable {
     var selectedLocalModelID: String?
     var selectedDocumentIDs: Set<UUID> = []
     var remote = RemoteProviderConfiguration()
+    var localSampling = LocalSamplingSettings()
+    var retrieval = RetrievalSettings()
     var server = ServerConfiguration()
     var hapticFeedback: Bool = true
     var streamingSpeed: Bool = true
 
     static let `default` = AppSettings()
+}
+
+struct LocalSamplingSettings: Codable, Sendable {
+    var temperature: Float = 0.7
+    var topK: Int = 40
+    var topP: Float = 0.9
+    var repetitionPenalty: Float = 1.1
+    var stopSequences: [String] = ["<|im_end|>", "</s>"]
+}
+
+struct RetrievalSettings: Codable, Sendable {
+    var topK: Int = 4
 }
 
 enum RuntimeSelection: String, Codable, CaseIterable, Identifiable {
