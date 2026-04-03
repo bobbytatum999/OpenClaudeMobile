@@ -23,13 +23,13 @@ struct SettingsView: View {
                 // Remote / API
                 Section {
                     LabeledContent("Provider URL") {
-                        TextField("https://api.anthropic.com/v1", text: $model.settings.remote.baseURL)
+                        TextField("https://api.openai.com/v1", text: $model.settings.remote.baseURL)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .multilineTextAlignment(.trailing)
                     }
                     LabeledContent("Model") {
-                        TextField("claude-3-5-sonnet-20240620", text: $model.settings.remote.model)
+                        TextField("gpt-4o-mini", text: $model.settings.remote.model)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .multilineTextAlignment(.trailing)
@@ -68,7 +68,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Remote / API")
                 } footer: {
-                    Text("Compatible with any OpenAI-format provider including Anthropic, Groq, Ollama, and LM Studio.")
+                    Text("Compatible with OpenAI-format providers such as OpenAI, Groq, Ollama, and LM Studio.")
                 }
 
                 // System prompt

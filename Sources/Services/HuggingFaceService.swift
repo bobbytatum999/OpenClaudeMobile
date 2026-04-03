@@ -135,7 +135,7 @@ struct HuggingFaceService {
 
         let values = try destination.resourceValues(forKeys: [.fileSizeKey])
         return InstalledModel(
-            id: "\(repoID)::\(sibling.rfilename)",
+            id: "\(repoID)::\(sibling.filename)",
             repoID: repoID,
             filename: sibling.filename,
             localPath: destination.path,
