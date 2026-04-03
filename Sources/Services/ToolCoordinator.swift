@@ -34,7 +34,7 @@ enum ToolCoordinatorError: LocalizedError {
 
 final class ToolCoordinator {
     private var tools: [String: ToolDefinition] = [:]
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "OpenClaudeMobile.ToolCoordinator")
 
     init(tools: [ToolDefinition] = []) {
         for tool in tools {
@@ -43,15 +43,15 @@ final class ToolCoordinator {
     }
 
     func register(_ tool: ToolDefinition) {
-        lock.lock()
-        defer { lock.unlock() }
-        tools[tool.name] = tool
+        queue.sync {
+            tools[tool.name] = tool
+        }
     }
 
     func allTools() -> [ToolDefinition] {
-        lock.lock()
-        defer { lock.unlock() }
-        Array(tools.values).sorted { $0.name < $1.name }
+        queue.sync {
+            Array(tools.values).sorted { $0.name < $1.name }
+        }
     }
 
     /// Expected format in model output:
@@ -66,9 +66,7 @@ final class ToolCoordinator {
     }
 
     func execute(_ call: ToolCall) async -> ToolResult {
-        lock.lock()
-        let tool = tools[call.name]
-        lock.unlock()
+        let tool = queue.sync { tools[call.name] }
         guard let tool else {
             return ToolResult(name: call.name, output: ToolCoordinatorError.unknownTool(call.name).localizedDescription, isError: true)
         }
