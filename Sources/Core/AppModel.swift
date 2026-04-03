@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class AppModel: ObservableObject {
-    // MARK: - State
+    // MARK: - UI State
 
     @Published var sessions: [ChatSession] = []
     @Published var selectedSessionID: UUID?
@@ -26,14 +26,22 @@ final class AppModel: ObservableObject {
     @Published var generationStats: GenerationStats?
     @Published var showingExportSheet = false
     @Published var exportContent: String = ""
+    @Published var toolTraceRows: [ToolTraceRow] = []
 
     // MARK: - Services
 
     let huggingFace = HuggingFaceService()
     let documents = DocumentService()
+    let documentContext = DocumentContextService()
     let remote = RemoteProviderService()
     let local = LocalModelEngine()
     let server = LocalAPIServer()
+    private let settingsStore = SettingsStore()
+    private let chatStore = ChatStore()
+
+    private let toolRegistry = ToolRegistry()
+    private lazy var toolCoordinator = ToolCoordinator(registry: toolRegistry)
+    private lazy var conversationEngine = ConversationEngine(modelManager: ModelManager(), toolCoordinator: toolCoordinator)
 
     private let sessionsSaveDebouncer = SaveDebouncer()
     private var generationTask: Task<Void, Never>?
@@ -52,7 +60,6 @@ final class AppModel: ObservableObject {
 
     var estimatedTokenCount: Int {
         guard let session = selectedSession else { return 0 }
-        // ~4 chars per token rough estimate
         return session.messages.reduce(0) { $0 + ($1.content.count / 4) }
     }
 
@@ -63,16 +70,24 @@ final class AppModel: ObservableObject {
     // MARK: - Bootstrap
 
     func bootstrap() async {
-        sessions = AppPersistence.load([ChatSession].self, from: AppPersistence.sessionsURL, default: [ChatSession()])
+        sessions = await chatStore.loadSessions()
         selectedSessionID = sessions.first?.id
-        settings = AppPersistence.load(AppSettings.self, from: AppPersistence.settingsURL, default: .default)
+        settings = settingsStore.load()
         importedDocuments = AppPersistence.load([ImportedDocument].self, from: AppPersistence.documentsURL, default: [])
         installedModels = scanInstalledModels()
         serverBaseURL = "http://\(settings.server.host):\(settings.server.port)"
+
+        await installDefaultTools()
         await server.attach(appModel: self)
+
         if settings.server.autoStart {
             do { try await startServer() } catch { statusLine = error.localizedDescription }
         }
+    }
+
+    private func installDefaultTools() async {
+        await toolRegistry.register(SearchDocumentsTool(appModel: self))
+        await toolRegistry.register(RuntimeInfoTool(appModel: self))
     }
 
     // MARK: - Sessions
@@ -111,11 +126,25 @@ final class AppModel: ObservableObject {
         persistSessions()
     }
 
+    func retryLastUserMessage() async {
+        guard let idx = selectedSessionIndex else { return }
+        guard let lastUser = sessions[idx].messages.last(where: { $0.role == .user }) else { return }
+        composingText = lastUser.content
+        await sendMessage()
+    }
+
+    func updateLastUserMessage(_ text: String) {
+        guard let idx = selectedSessionIndex,
+              let userIndex = sessions[idx].messages.lastIndex(where: { $0.role == .user }) else { return }
+        sessions[idx].messages[userIndex].content = text
+        persistSessions()
+    }
+
     // MARK: - Settings
 
     func saveSettings() {
         do {
-            try AppPersistence.save(settings, to: AppPersistence.settingsURL)
+            try settingsStore.save(settings)
             serverBaseURL = "http://\(settings.server.host):\(settings.server.port)"
         } catch { statusLine = error.localizedDescription }
     }
@@ -126,8 +155,10 @@ final class AppModel: ObservableObject {
     }
 
     func persistSessions() {
-        let s = sessions
-        sessionsSaveDebouncer.schedule { try? AppPersistence.save(s, to: AppPersistence.sessionsURL) }
+        let snapshot = sessions
+        sessionsSaveDebouncer.schedule {
+            Task { await self.chatStore.saveSessions(snapshot) }
+        }
     }
 
     // MARK: - Documents
@@ -151,7 +182,7 @@ final class AppModel: ObservableObject {
         saveSettings()
     }
 
-    // MARK: - HuggingFace / Models
+    // MARK: - Models
 
     func searchHuggingFace() async {
         isSearchingModels = true
@@ -194,21 +225,24 @@ final class AppModel: ObservableObject {
         haptic(.medium)
     }
 
-    // MARK: - Send / Stop / Regenerate
+    // MARK: - Generation
 
     func sendMessage() async {
         guard !isSending else { return }
         guard let sessionID = selectedSessionID,
               let index = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
+
         let trimmed = composingText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
         haptic(.light)
         isSending = true
-        let userMessage = ChatMessage(role: .user, content: trimmed)
-        sessions[index].messages.append(userMessage)
+        toolTraceRows.removeAll()
+
+        sessions[index].messages.append(ChatMessage(role: .user, content: trimmed))
         sessions[index].updatedAt = .now
         composingText = ""
+
         let assistantID = UUID()
         sessions[index].messages.append(ChatMessage(id: assistantID, role: .assistant, content: ""))
         persistSessions()
@@ -218,7 +252,7 @@ final class AppModel: ObservableObject {
 
         generationTask = Task {
             do {
-                let stream = try self.currentResponseStream(from: messagesSnapshot)
+                let stream = try await self.currentResponseStream(from: messagesSnapshot)
                 for try await token in stream {
                     if Task.isCancelled { break }
                     if let liveIndex = self.sessions.firstIndex(where: { $0.id == sessionID }),
@@ -227,13 +261,13 @@ final class AppModel: ObservableObject {
                         self.generationStats?.tokensGenerated += 1
                     }
                 }
-                if let liveIndex = self.sessions.firstIndex(where: { $0.id == sessionID }) {
-                    if let title = self.sessions[liveIndex].messages.first(where: { $0.role == .user })?.content,
-                       self.sessions[liveIndex].title == "New Chat" {
-                        self.sessions[liveIndex].title = String(title.prefix(42))
-                    }
-                    self.sessions[liveIndex].updatedAt = .now
+
+                if let liveIndex = self.sessions.firstIndex(where: { $0.id == sessionID }),
+                   self.sessions[liveIndex].title == "New Chat",
+                   let title = self.sessions[liveIndex].messages.first(where: { $0.role == .user })?.content {
+                    self.sessions[liveIndex].title = String(title.prefix(42))
                 }
+
                 self.generationStats?.endTime = .now
                 self.statusLine = String(format: "%.1f tok/s", self.generationStats?.tokensPerSecond ?? 0)
                 self.persistSessions()
@@ -252,6 +286,7 @@ final class AppModel: ObservableObject {
             }
             self.isSending = false
         }
+
         await generationTask?.value
     }
 
@@ -265,42 +300,33 @@ final class AppModel: ObservableObject {
     func regenerateLastResponse() async {
         guard let sessionID = selectedSessionID,
               let index = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
-        // Remove last assistant message
-        if sessions[index].messages.last?.role == .assistant {
-            sessions[index].messages.removeLast()
-        }
-        // Re-inject empty assistant placeholder and stream
+        if sessions[index].messages.last?.role == .assistant { sessions[index].messages.removeLast() }
         let assistantID = UUID()
         sessions[index].messages.append(ChatMessage(id: assistantID, role: .assistant, content: ""))
         persistSessions()
 
-        let messagesSnapshot = Array(sessions[index].messages.dropLast())
+        let snapshot = Array(sessions[index].messages.dropLast())
         haptic(.light)
         isSending = true
-        generationStats = GenerationStats()
 
         generationTask = Task {
             do {
-                let stream = try self.currentResponseStream(from: messagesSnapshot)
+                let stream = try await self.currentResponseStream(from: snapshot)
                 for try await token in stream {
-                    if Task.isCancelled { break }
                     if let liveIndex = self.sessions.firstIndex(where: { $0.id == sessionID }),
                        let msgIndex = self.sessions[liveIndex].messages.firstIndex(where: { $0.id == assistantID }) {
                         self.sessions[liveIndex].messages[msgIndex].content += token
-                        self.generationStats?.tokensGenerated += 1
                     }
                 }
-                self.generationStats?.endTime = .now
-                self.statusLine = String(format: "%.1f tok/s", self.generationStats?.tokensPerSecond ?? 0)
                 self.persistSessions()
-                self.haptic(.success)
             } catch { self.statusLine = error.localizedDescription }
             self.isSending = false
         }
+
         await generationTask?.value
     }
 
-    // MARK: - Export
+    // MARK: - Export / Server / API
 
     func exportCurrentSession() {
         guard let session = selectedSession else { return }
@@ -314,8 +340,6 @@ final class AppModel: ObservableObject {
         showingExportSheet = true
     }
 
-    // MARK: - Server
-
     func startServer() async throws {
         try await server.start(configuration: settings.server)
         isServerRunning = true
@@ -328,88 +352,109 @@ final class AppModel: ObservableObject {
         statusLine = "Server stopped"
     }
 
-    // MARK: - API (used by LocalAPIServer)
-
-    // Returns a Sendable-safe snapshot for use by the server actor
-    nonisolated func apiModelInventory(
-        installedModels: [InstalledModel],
-        settings: AppSettings
-    ) -> [[String: String]] {
+    nonisolated func apiModelInventory(installedModels: [InstalledModel], settings: AppSettings) -> [[String: String]] {
         switch settings.selectedRuntime {
         case .local:
-            return installedModels.map { m in
-                ["id": m.id, "object": "model",
-                 "created": "\(Int(m.installedAt.timeIntervalSince1970))",
-                 "owned_by": "local"]
-            }
+            return installedModels.map { ["id": $0.id, "object": "model", "created": "\(Int($0.installedAt.timeIntervalSince1970))", "owned_by": "local"] }
         case .remote:
-            return [["id": settings.remote.model, "object": "model",
-                     "created": "0", "owned_by": "remote"]]
+            return [["id": settings.remote.model, "object": "model", "created": "0", "owned_by": "remote"]]
         }
     }
 
     func streamFromAPI(messages: [LocalAPIServer.ChatRequest.Message], model: String?, temperature: Double?, maxTokens: Int?) -> AsyncThrowingStream<String, Error> {
-        var chatMessages: [ChatMessage] = []
-        if !settings.remote.systemPrompt.isEmpty {
-            chatMessages.append(ChatMessage(role: .system, content: settings.remote.systemPrompt))
-        }
-        chatMessages += messages.map {
-            ChatMessage(role: ChatMessage.Role(rawValue: $0.role) ?? .user, content: $0.content)
+        var converted = messages.map { ChatMessage(role: ChatMessage.Role(rawValue: $0.role) ?? .user, content: $0.content) }
+        if converted.first?.role != .system, !settings.remote.systemPrompt.isEmpty {
+            converted.insert(ChatMessage(role: .system, content: settings.remote.systemPrompt), at: 0)
         }
         var cfg = settings.remote
-        if let t = temperature { cfg.temperature = t }
-        if let m = maxTokens { cfg.maxTokens = m }
-        if let modelID = model { cfg.model = modelID }
-        return (try? currentResponseStream(from: chatMessages, remoteConfiguration: cfg)) ?? AsyncThrowingStream { _ in }
+        if let temp = temperature { cfg.temperature = temp }
+        if let maxTokens { cfg.maxTokens = maxTokens }
+        if let model { cfg.model = model }
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let upstream = try await self.currentResponseStream(from: converted, remoteConfiguration: cfg)
+                    for try await token in upstream {
+                        continuation.yield(token)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
     }
 
     func completeFromAPI(messages: [LocalAPIServer.ChatRequest.Message], model: String?, temperature: Double?, maxTokens: Int?) async throws -> String {
-        var result = ""
-        for try await token in streamFromAPI(messages: messages, model: model, temperature: temperature, maxTokens: maxTokens) {
-            result += token
+        var text = ""
+        for try await chunk in streamFromAPI(messages: messages, model: model, temperature: temperature, maxTokens: maxTokens) {
+            text += chunk
         }
-        return result
+        return text
     }
 
-    // MARK: - Private
+    // MARK: - Internal runtime wiring
 
     private func currentResponseStream(
         from messages: [ChatMessage],
         runtime: RuntimeSelection? = nil,
         localModelID: String? = nil,
         remoteConfiguration: RemoteProviderConfiguration? = nil
-    ) throws -> AsyncThrowingStream<String, Error> {
+    ) async throws -> AsyncThrowingStream<String, Error> {
         let selectedDocs = importedDocuments.filter { settings.selectedDocumentIDs.contains($0.id) }
+        let question = messages.last(where: { $0.role == .user })?.content ?? ""
+        let chunks = documentContext.topChunks(from: selectedDocs, query: question)
+
         let activeRuntime = runtime ?? settings.selectedRuntime
-        let activeRemote = remoteConfiguration ?? settings.remote
+        let remoteCfg = remoteConfiguration ?? settings.remote
+
+        let backend: any ChatBackend
+        let modelHint: String?
+
         if activeRuntime == .local {
-            let prompt = PromptBuilder.buildPrompt(messages: messages, selectedDocuments: selectedDocs, systemPrompt: activeRemote.systemPrompt)
-            let model = installedModels.first { $0.id == (localModelID ?? settings.selectedLocalModelID) }
-            guard let model else { throw LocalModelEngine.EngineError.noModelSelected }
-            return local.generate(prompt: prompt, modelURL: model.fileURL, maxTokens: activeRemote.maxTokens, temperature: Float(activeRemote.temperature))
+            guard let model = installedModels.first(where: { $0.id == (localModelID ?? settings.selectedLocalModelID) }) else {
+                throw LocalModelEngine.EngineError.noModelSelected
+            }
+            backend = LocalChatBackend(engine: local, modelURL: model.fileURL)
+            modelHint = model.filename
+        } else {
+            backend = RemoteChatBackend(remote: remote, configuration: remoteCfg)
+            modelHint = remoteCfg.model
         }
-        let effectiveMessages = messages + selectedDocs.map {
-            ChatMessage(role: .user, content: "[Attached document: \($0.filename)]\n\($0.textPreview)")
-        }
-        return remote.stream(messages: effectiveMessages, configuration: activeRemote)
+
+        return await conversationEngine.streamConversation(
+            seedMessages: messages,
+            backend: backend,
+            systemPrompt: remoteCfg.systemPrompt,
+            sampling: settings.localSampling,
+            maxTokens: remoteCfg.maxTokens,
+            modelIDHint: modelHint,
+            documentContext: chunks,
+            onToolEvent: { [weak self] event in
+                Task { @MainActor in
+                    self?.toolTraceRows.append(
+                        ToolTraceRow(name: event.toolName, input: event.input, output: event.output, isError: event.isError)
+                    )
+                }
+            }
+        )
     }
 
-    // MARK: - Haptics
+    // MARK: - Haptics & models
 
     enum HapticStyle { case light, medium, heavy, success, error }
 
     func haptic(_ style: HapticStyle) {
         guard settings.hapticFeedback else { return }
         switch style {
-        case .light:   UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        case .medium:  UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        case .heavy:   UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+        case .light: UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        case .medium: UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        case .heavy: UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
         case .success: UINotificationFeedbackGenerator().notificationOccurred(.success)
-        case .error:   UINotificationFeedbackGenerator().notificationOccurred(.error)
+        case .error: UINotificationFeedbackGenerator().notificationOccurred(.error)
         }
     }
-
-    // MARK: - Model Scanning
 
     var selectedLocalModel: InstalledModel? {
         guard let id = settings.selectedLocalModelID else { return nil }
@@ -433,14 +478,54 @@ final class AppModel: ObservableObject {
     }
 }
 
-// MARK: - Debouncer
+private final class SearchDocumentsTool: ToolExecutable {
+    weak var appModel: AppModel?
+
+    init(appModel: AppModel) {
+        self.appModel = appModel
+    }
+
+    var definition: ToolDefinition {
+        ToolDefinition(name: "search_documents", description: "Search imported document chunks by keyword relevance.", parameters: ["query"])
+    }
+
+    func run(arguments: [String: String]) async throws -> String {
+        guard let appModel else { return "App model unavailable." }
+        let q = arguments["query"] ?? ""
+        let docs = await MainActor.run {
+            appModel.importedDocuments.filter { appModel.settings.selectedDocumentIDs.contains($0.id) }
+        }
+        let hits = appModel.documentContext.topChunks(from: docs, query: q, limit: 3)
+        if hits.isEmpty { return "No relevant chunks found." }
+        return hits.map { "[\($0.filename)] \($0.text.prefix(220))" }.joined(separator: "\n\n")
+    }
+}
+
+private final class RuntimeInfoTool: ToolExecutable {
+    weak var appModel: AppModel?
+
+    init(appModel: AppModel) {
+        self.appModel = appModel
+    }
+
+    var definition: ToolDefinition {
+        ToolDefinition(name: "runtime_info", description: "Returns local runtime mode, selected model and context stats.", parameters: ["detail"])
+    }
+
+    func run(arguments: [String: String]) async throws -> String {
+        guard let appModel else { return "App model unavailable." }
+        return await MainActor.run {
+            "runtime=\(appModel.settings.selectedRuntime.title), model=\(appModel.selectedLocalModel?.filename ?? appModel.settings.remote.model), est_tokens=\(appModel.estimatedTokenCount)"
+        }
+    }
+}
 
 final class SaveDebouncer: @unchecked Sendable {
     private var workItem: DispatchWorkItem?
     private let queue = DispatchQueue(label: "SaveDebouncer", qos: .utility)
-    func schedule(after delay: TimeInterval = 0.8, _ work: @escaping () throws -> Void) {
+    func schedule(after delay: TimeInterval = 0.8, _ work: @escaping () -> Void) {
         workItem?.cancel()
-        let item = DispatchWorkItem { try? work() }
+        let item = DispatchWorkItem(block: work)
         workItem = item
         queue.asyncAfter(deadline: .now() + delay, execute: item)
     }

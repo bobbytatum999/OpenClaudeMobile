@@ -56,6 +56,9 @@ actor LocalAPIServer {
         let messages: [Message]
         let stream: Bool?
         let temperature: Double?
+        let top_p: Double?
+        let top_k: Int?
+        let repetition_penalty: Double?
         let max_tokens: Int?
     }
 
@@ -158,8 +161,26 @@ actor LocalAPIServer {
                 let body = try JSONSerialization.data(withJSONObject: payload)
                 try await sendJSON(body, status: "200 OK", on: connection)
 
+            case ("GET", "/v1/capabilities"):
+                let payload: [String: Any] = [
+                    "canStream": true,
+                    "supportsTools": true,
+                    "supportsSystemPrompts": true,
+                    "supportsJSONMode": false,
+                    "supportsDocuments": true
+                ]
+                let body = try JSONSerialization.data(withJSONObject: payload)
+                try await sendJSON(body, status: "200 OK", on: connection)
+
             case ("POST", "/v1/chat/completions"):
                 let decoded = try JSONDecoder().decode(ChatRequest.self, from: request.body)
+                let modelRef = appModel
+                await MainActor.run {
+                    if let t = decoded.temperature { modelRef?.settings.localSampling.temperature = Float(t) }
+                    if let p = decoded.top_p { modelRef?.settings.localSampling.topP = Float(p) }
+                    if let k = decoded.top_k { modelRef?.settings.localSampling.topK = k }
+                    if let rp = decoded.repetition_penalty { modelRef?.settings.localSampling.repetitionPenalty = Float(rp) }
+                }
                 if decoded.stream == true {
                     try await sendSSEPrelude(on: connection)
                     let stream = await appModel?.streamFromAPI(
