@@ -78,7 +78,7 @@ final class AppModel: ObservableObject {
         importedDocuments = AppPersistence.load([ImportedDocument].self, from: AppPersistence.documentsURL, default: [])
         installedModels = scanInstalledModels()
         migrateLegacySelectedModelIDIfNeeded()
-        await registerDefaultTools()
+        registerDefaultTools()
         serverBaseURL = "http://\(settings.server.host):\(settings.server.port)"
         await server.attach(appModel: self)
         if settings.server.autoStart {
@@ -153,8 +153,8 @@ final class AppModel: ObservableObject {
         } catch { statusLine = error.localizedDescription }
     }
 
-    private func registerDefaultTools() async {
-        await toolCoordinator.register(
+    private func registerDefaultTools() {
+        toolCoordinator.register(
             ToolDefinition(
                 name: "search_docs",
                 description: "Search imported document chunks by keyword overlap.",
@@ -168,7 +168,7 @@ final class AppModel: ObservableObject {
                 return hits.map { "\($0.citation)\n\($0.text)" }.joined(separator: "\n\n")
             }
         )
-        await toolCoordinator.register(
+        toolCoordinator.register(
             ToolDefinition(
                 name: "list_installed_models",
                 description: "List local GGUF models currently installed.",

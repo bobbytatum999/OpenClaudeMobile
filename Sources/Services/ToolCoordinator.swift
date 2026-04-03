@@ -32,8 +32,9 @@ enum ToolCoordinatorError: LocalizedError {
     }
 }
 
-actor ToolCoordinator {
+final class ToolCoordinator {
     private var tools: [String: ToolDefinition] = [:]
+    private let lock = NSLock()
 
     init(tools: [ToolDefinition] = []) {
         for tool in tools {
@@ -42,10 +43,14 @@ actor ToolCoordinator {
     }
 
     func register(_ tool: ToolDefinition) {
+        lock.lock()
+        defer { lock.unlock() }
         tools[tool.name] = tool
     }
 
     func allTools() -> [ToolDefinition] {
+        lock.lock()
+        defer { lock.unlock() }
         Array(tools.values).sorted { $0.name < $1.name }
     }
 
@@ -61,7 +66,10 @@ actor ToolCoordinator {
     }
 
     func execute(_ call: ToolCall) async -> ToolResult {
-        guard let tool = tools[call.name] else {
+        lock.lock()
+        let tool = tools[call.name]
+        lock.unlock()
+        guard let tool else {
             return ToolResult(name: call.name, output: ToolCoordinatorError.unknownTool(call.name).localizedDescription, isError: true)
         }
         do {

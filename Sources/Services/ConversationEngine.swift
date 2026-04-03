@@ -40,7 +40,7 @@ struct ConversationEngine {
                         continuation.yield(.token(token))
                     }
 
-                    if let call = await tools.parseToolCall(from: assistantText) {
+                    if let call = tools.parseToolCall(from: assistantText) {
                         continuation.yield(.toolStarted(call.name))
                         let result = await tools.execute(call)
                         continuation.yield(.toolFinished(name: result.name, output: result.output, isError: result.isError))
