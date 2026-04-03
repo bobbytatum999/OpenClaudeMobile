@@ -20,7 +20,7 @@ struct HuggingFaceService {
         let downloads: Int?
         let likes: Int?
         let pipelineTag: String?
-        let `private`: Bool?
+        let privateRepo: Bool?
         let lastModified: Date?
         let siblings: [Sibling]?
 
@@ -55,15 +55,15 @@ struct HuggingFaceService {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let items = try decoder.decode([SearchResponseItem].self, from: data)
-        return items.map {
+        return items.map { item in
             HuggingFaceModelSummary(
-                id: $0.id,
-                downloads: $0.downloads,
-                likes: $0.likes,
-                pipelineTag: $0.pipelineTag,
-                privateRepo: $0.private ?? false,
-                lastModified: $0.lastModified,
-                siblings: ($0.siblings ?? []).map { HuggingFaceSibling(rfilename: $0.rfilename, size: $0.size) }
+                id: item.id,
+                downloads: item.downloads,
+                likes: item.likes,
+                pipelineTag: item.pipelineTag,
+                privateRepo: item.privateRepo ?? false,
+                lastModified: item.lastModified,
+                siblings: (item.siblings ?? []).map { HuggingFaceSibling(rfilename: $0.rfilename, size: $0.size) }
             )
         }
     }
@@ -120,14 +120,9 @@ struct HuggingFaceService {
         let tempSession = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
 
         let temporaryURL: URL = try await withCheckedThrowingContinuation { continuation in
-            let isResumed = NSRecursiveLock()
-            var resumed = false
+            let wrapper = ContinuationWrapper(continuation: continuation)
             delegate.onCompletion = { result in
-                isResumed.lock()
-                defer { isResumed.unlock() }
-                guard !resumed else { return }
-                resumed = true
-                continuation.resume(with: result)
+                wrapper.resume(with: result)
             }
             let task = tempSession.downloadTask(with: request)
             task.resume()
@@ -147,5 +142,23 @@ struct HuggingFaceService {
             sizeBytes: Int64(values.fileSize ?? 0),
             installedAt: .now
         )
+    }
+}
+
+private final class ContinuationWrapper: @unchecked Sendable {
+    private let lock = NSRecursiveLock()
+    private var resumed = false
+    private let continuation: CheckedContinuation<URL, any Error>
+
+    init(continuation: CheckedContinuation<URL, any Error>) {
+        self.continuation = continuation
+    }
+
+    func resume(with result: Result<URL, any Error>) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !resumed else { return }
+        resumed = true
+        continuation.resume(with: result)
     }
 }

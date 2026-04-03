@@ -1,62 +1,138 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject var model: AppModel
+    @State private var showAPIKey = false
+    @State private var showHFToken = false
 
     var body: some View {
-        Form {
-            Section("Remote Provider") {
-                TextField("Base URL", text: Binding(
-                    get: { model.settings.remote.baseURL },
-                    set: { model.settings.remote.baseURL = $0; model.saveSettings() }
-                ))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
+        NavigationStack {
+            Form {
+                // Runtime selection
+                Section("Runtime") {
+                    Picker("Default Runtime", selection: $model.settings.selectedRuntime) {
+                        ForEach(RuntimeSelection.allCases) { r in
+                            Label(r.title, systemImage: r == .local ? "cpu.fill" : "cloud.fill")
+                                .tag(r)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: model.settings.selectedRuntime) { _, _ in model.saveSettings() }
+                }
 
-                TextField("API Key", text: Binding(
-                    get: { model.settings.remote.apiKey },
-                    set: { model.settings.remote.apiKey = $0; model.saveSettings() }
-                ))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
+                // Remote / API
+                Section {
+                    LabeledContent("Provider URL") {
+                        TextField("https://api.anthropic.com/v1", text: $model.settings.remote.baseURL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .multilineTextAlignment(.trailing)
+                    }
+                    LabeledContent("Model") {
+                        TextField("claude-3-5-sonnet-20240620", text: $model.settings.remote.model)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .multilineTextAlignment(.trailing)
+                    }
+                    HStack {
+                        Label("API Key", systemImage: "key.fill")
+                        Spacer()
+                        Group {
+                            if showAPIKey {
+                                TextField("sk-…", text: $model.settings.remote.apiKey)
+                            } else {
+                                SecureField("sk-…", text: $model.settings.remote.apiKey)
+                            }
+                        }
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .multilineTextAlignment(.trailing)
+                        Button { showAPIKey.toggle() } label: {
+                            Image(systemName: showAPIKey ? "eye.slash" : "eye")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    LabeledContent("Temperature") {
+                        Slider(value: $model.settings.remote.temperature, in: 0...2, step: 0.05)
+                            .frame(width: 130)
+                        Text(String(format: "%.2f", model.settings.remote.temperature))
+                            .font(.caption.monospacedDigit())
+                            .foregroundColor(.secondary)
+                            .frame(width: 36)
+                    }
+                    LabeledContent("Max Tokens") {
+                        TextField("4096", value: $model.settings.remote.maxTokens, format: .number)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                    }
+                } header: {
+                    Text("Remote / API")
+                } footer: {
+                    Text("Compatible with any OpenAI-format provider including Anthropic, Groq, Ollama, and LM Studio.")
+                }
 
-                TextField("Model", text: Binding(
-                    get: { model.settings.remote.model },
-                    set: { model.settings.remote.model = $0; model.saveSettings() }
-                ))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
+                // System prompt
+                Section("System Prompt") {
+                    TextEditor(text: $model.settings.remote.systemPrompt)
+                        .frame(minHeight: 80)
+                        .font(.body)
+                }
 
-                TextField("System Prompt", text: Binding(
-                    get: { model.settings.remote.systemPrompt },
-                    set: { model.settings.remote.systemPrompt = $0; model.saveSettings() }
-                ), axis: .vertical)
-                .lineLimit(3...8)
+                // HuggingFace
+                Section {
+                    HStack {
+                        Label("HF Token", systemImage: "person.badge.key.fill")
+                        Spacer()
+                        Group {
+                            if showHFToken {
+                                TextField("hf_…", text: $model.settings.huggingFaceToken)
+                            } else {
+                                SecureField("hf_… (optional, for gated models)", text: $model.settings.huggingFaceToken)
+                            }
+                        }
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .multilineTextAlignment(.trailing)
+                        Button { showHFToken.toggle() } label: {
+                            Image(systemName: showHFToken ? "eye.slash" : "eye")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                } header: {
+                    Text("HuggingFace")
+                } footer: {
+                    Text("Required for gated or private model downloads.")
+                }
 
-                Stepper(value: Binding(
-                    get: { model.settings.remote.maxTokens },
-                    set: { model.settings.remote.maxTokens = $0; model.saveSettings() }
-                ), in: 128...8192, step: 64) {
-                    Text("Max Tokens: \(model.settings.remote.maxTokens)")
+                // Behaviour
+                Section("Behaviour") {
+                    Toggle(isOn: $model.settings.hapticFeedback) {
+                        Label("Haptic Feedback", systemImage: "waveform")
+                    }
+                    .onChange(of: model.settings.hapticFeedback) { _, _ in model.saveSettings() }
+                }
+
+                // App info
+                Section("About") {
+                    LabeledContent("Version") {
+                        Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")
+                            .foregroundColor(.secondary)
+                    }
+                    Link(destination: URL(string: "https://github.com/bobbytatum999/OpenClaudeMobile")!) {
+                        Label("GitHub Repository", systemImage: "link")
+                    }
                 }
             }
-
-            Section("Hugging Face") {
-                SecureField("HF Token (optional for public models)", text: Binding(
-                    get: { model.settings.huggingFaceToken },
-                    set: { model.settings.huggingFaceToken = $0; model.saveSettings() }
-                ))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            }
-
-            Section("About") {
-                LabeledContent("Build Target", value: "iOS 26+ • iPhone")
-                LabeledContent("Reference Origin", value: "OpenClaude CLI archive")
-                LabeledContent("Local Runtime", value: "GGUF via llama.cpp")
-                LabeledContent("Remote Runtime", value: "OpenAI-compatible")
+            .navigationTitle("Settings")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Save") {
+                        model.saveSettings()
+                        model.haptic(.success)
+                    }
+                    .fontWeight(.semibold)
+                }
             }
         }
-        .navigationTitle("Settings")
     }
 }

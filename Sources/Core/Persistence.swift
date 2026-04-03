@@ -1,47 +1,55 @@
 import Foundation
 
-enum AppPersistence {
-    static let decoder: JSONDecoder = {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return decoder
-    }()
-
-    static let encoder: JSONEncoder = {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        return encoder
-    }()
-
-    static var appSupportDirectory: URL {
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("OpenClaudeMobile", isDirectory: true)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+struct AppPersistence {
+    static let shared = AppPersistence()
+    
+    static var documentsDirectory: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    }
+    
+    static var workspaceDirectory: URL {
+        let url = documentsDirectory.appendingPathComponent("OpenClaude", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
         return url
     }
-
-    static var sessionsURL: URL { appSupportDirectory.appendingPathComponent("sessions.json") }
-    static var settingsURL: URL { appSupportDirectory.appendingPathComponent("settings.json") }
-    static var documentsURL: URL { appSupportDirectory.appendingPathComponent("documents.json") }
+    
     static var modelsDirectory: URL {
-        let dir = appSupportDirectory.appendingPathComponent("Models", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
+        let url = workspaceDirectory.appendingPathComponent("Models", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        return url
     }
+    
     static var importedFilesDirectory: URL {
-        let dir = appSupportDirectory.appendingPathComponent("Documents", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
+        let url = workspaceDirectory.appendingPathComponent("ImportedFiles", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        return url
     }
-
-    static func load<T: Decodable>(_ type: T.Type, from url: URL, default defaultValue: T) -> T {
-        guard let data = try? Data(contentsOf: url) else { return defaultValue }
-        return (try? decoder.decode(T.self, from: data)) ?? defaultValue
+    
+    static var settingsURL: URL {
+        workspaceDirectory.appendingPathComponent("settings.json")
     }
-
-    static func save<T: Encodable>(_ value: T, to url: URL) throws {
-        let data = try encoder.encode(value)
-        try data.write(to: url, options: [.atomic])
+    
+    static var sessionsURL: URL {
+        workspaceDirectory.appendingPathComponent("sessions.json")
+    }
+    
+    static var documentsURL: URL {
+        workspaceDirectory.appendingPathComponent("documents.json")
+    }
+    
+    static func save<T: Encodable>(_ object: T, to url: URL) throws {
+        let data = try JSONEncoder().encode(object)
+        try data.write(to: url, options: .atomic)
+    }
+    
+    static func load<T: Decodable>(_ type: T.Type, from url: URL, default: T) -> T {
+        guard let data = try? Data(contentsOf: url) else { return `default` }
+        return (try? JSONDecoder().decode(type, from: data)) ?? `default`
     }
 }

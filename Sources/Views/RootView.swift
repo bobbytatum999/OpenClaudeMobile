@@ -1,60 +1,39 @@
 import SwiftUI
 
 struct RootView: View {
-    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject var model: AppModel
+    @State private var selectedTab: Tab = .chat
+
+    enum Tab: Hashable {
+        case chat, models, files, server, settings
+    }
 
     var body: some View {
-        TabView {
-            NavigationStack {
-                ChatView()
-            }
-            .tabItem {
-                Label("Chat", systemImage: "bubble.left.and.bubble.right.fill")
-            }
+        TabView(selection: $selectedTab) {
+            ChatView()
+                .tabItem { Label("Chat", systemImage: "message.fill") }
+                .tag(Tab.chat)
 
-            NavigationStack {
-                ModelsView()
-            }
-            .tabItem {
-                Label("Models", systemImage: "cube.box.fill")
-            }
+            ModelsView()
+                .tabItem { Label("Models", systemImage: "cpu.fill") }
+                .tag(Tab.models)
+                .badge(model.installedModels.isEmpty ? "!" : nil)
 
-            NavigationStack {
-                FilesView()
-            }
-            .tabItem {
-                Label("Files", systemImage: "doc.text.fill")
-            }
+            FilesView()
+                .tabItem { Label("Files", systemImage: "folder.fill") }
+                .tag(Tab.files)
+                .badge(model.settings.selectedDocumentIDs.isEmpty ? nil : "\(model.settings.selectedDocumentIDs.count)")
 
-            NavigationStack {
-                ServerView()
-            }
-            .tabItem {
-                Label("Server", systemImage: "server.rack")
-            }
+            ServerView()
+                .tabItem { Label("Server", systemImage: "server.rack") }
+                .tag(Tab.server)
+                .badge(model.isServerRunning ? "●" : nil)
 
-            NavigationStack {
-                SettingsView()
-            }
-            .tabItem {
-                Label("Settings", systemImage: "gearshape.fill")
-            }
+            SettingsView()
+                .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+                .tag(Tab.settings)
         }
-        .background(
-            LinearGradient(
-                colors: [Color.black.opacity(0.06), Color.accentColor.opacity(0.10), Color.blue.opacity(0.08)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-        )
-        .overlay(alignment: .bottom) {
-            Text(model.statusLine)
-                .font(.footnote.weight(.medium))
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(.thinMaterial, in: Capsule())
-                .padding(.bottom, 68)
-        }
+        .task { await model.bootstrap() }
+        .tint(.accentColor)
     }
 }
