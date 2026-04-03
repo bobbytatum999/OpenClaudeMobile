@@ -384,7 +384,8 @@ final class AppModel: ObservableObject {
         let activeRemote = remoteConfiguration ?? settings.remote
         if activeRuntime == .local {
             let prompt = PromptBuilder.buildPrompt(messages: messages, selectedDocuments: selectedDocs, systemPrompt: activeRemote.systemPrompt)
-            let model = installedModels.first { $0.id == (localModelID ?? settings.selectedLocalModelID) }
+            let selectedID = localModelID ?? settings.selectedLocalModelID
+            let model = installedModels.first { $0.id == selectedID } ?? installedModels.first
             guard let model else { throw LocalModelEngine.EngineError.noModelSelected }
             return local.generate(prompt: prompt, modelURL: model.fileURL, maxTokens: activeRemote.maxTokens, temperature: Float(activeRemote.temperature))
         }
@@ -418,18 +419,27 @@ final class AppModel: ObservableObject {
 
     private func scanInstalledModels() -> [InstalledModel] {
         let dir = AppPersistence.modelsDirectory
-        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey]) else { return [] }
-        return files.filter { $0.pathExtension.lowercased() == "gguf" }.compactMap { url in
-            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize.map { Int64($0) } ?? 0
-            return InstalledModel(
-                id: url.lastPathComponent,
-                repoID: url.deletingLastPathComponent().lastPathComponent,
-                filename: url.lastPathComponent,
-                localPath: url.path,
-                sizeBytes: size,
-                installedAt: (try? url.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .now
-            )
-        }
+        guard let enumerator = FileManager.default.enumerator(
+            at: dir,
+            includingPropertiesForKeys: [.fileSizeKey, .creationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        return enumerator.compactMap { $0 as? URL }
+            .filter { $0.pathExtension.lowercased() == "gguf" }
+            .compactMap { url in
+                let repoFolder = url.deletingLastPathComponent().lastPathComponent
+                let repoID = repoFolder.replacingOccurrences(of: "__", with: "/")
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize.map { Int64($0) } ?? 0
+                return InstalledModel(
+                    id: "\(repoID)::\(url.lastPathComponent)",
+                    repoID: repoID,
+                    filename: url.lastPathComponent,
+                    localPath: url.path,
+                    sizeBytes: size,
+                    installedAt: (try? url.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .now
+                )
+            }
     }
 }
 
