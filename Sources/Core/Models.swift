@@ -237,3 +237,17 @@ struct GenerationStats {
 
     var isComplete: Bool { endTime != nil }
 }
+
+// MARK: - App Logs
+
+enum AppLogLevel: String, Codable {
+    case info, warning, error
+}
+
+struct AppLogEntry: Identifiable, Codable {
+    var id = UUID()
+    var timestamp: Date = .now
+    var level: AppLogLevel = .info
+    var category: String
+    var message: String
+}

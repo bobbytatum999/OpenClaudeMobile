@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
@@ -110,6 +111,60 @@ struct SettingsView: View {
                         Label("Haptic Feedback", systemImage: "waveform")
                     }
                     .onChange(of: model.settings.hapticFeedback) { _, _ in model.saveSettings() }
+                }
+
+                Section {
+                    HStack {
+                        Label("Entries", systemImage: "text.append")
+                        Spacer()
+                        Text("\(model.appLogs.count)")
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if model.appLogs.isEmpty {
+                        Text("No app logs yet.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(model.appLogs.prefix(120)) { entry in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(entry.timestamp.formatted(date: .omitted, time: .standard))
+                                        .font(.caption.monospacedDigit())
+                                        .foregroundStyle(.secondary)
+                                    Text(entry.level.rawValue.uppercased())
+                                        .font(.caption2.bold())
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(entry.level == .error ? Color.red.opacity(0.18) : (entry.level == .warning ? Color.orange.opacity(0.18) : Color.blue.opacity(0.14)))
+                                        .clipShape(Capsule())
+                                }
+                                Text("[\(entry.category)] \(entry.message)")
+                                    .font(.caption)
+                                    .textSelection(.enabled)
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
+
+                    HStack {
+                        Button {
+                            UIPasteboard.general.string = model.exportLogsText()
+                        } label: {
+                            Label("Copy Logs", systemImage: "doc.on.doc")
+                        }
+
+                        Spacer()
+
+                        Button(role: .destructive) {
+                            model.clearAppLogs()
+                        } label: {
+                            Label("Clear", systemImage: "trash")
+                        }
+                    }
+                } header: {
+                    Text("App Logs")
+                } footer: {
+                    Text("Includes chat/runtime/app events. Local API server request logs are intentionally excluded.")
                 }
 
                 // App info

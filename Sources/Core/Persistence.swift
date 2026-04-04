@@ -42,6 +42,10 @@ struct AppPersistence {
     static var documentsURL: URL {
         workspaceDirectory.appendingPathComponent("documents.json")
     }
+
+    static var appLogsURL: URL {
+        workspaceDirectory.appendingPathComponent("app-logs.json")
+    }
     
     static func save<T: Encodable>(_ object: T, to url: URL) throws {
         let data = try JSONEncoder().encode(object)

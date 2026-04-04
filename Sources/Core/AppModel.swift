@@ -26,6 +26,7 @@ final class AppModel: ObservableObject {
     @Published var generationStats: GenerationStats?
     @Published var showingExportSheet = false
     @Published var exportContent: String = ""
+    @Published var appLogs: [AppLogEntry] = []
 
     // MARK: - Services
 
@@ -76,10 +77,12 @@ final class AppModel: ObservableObject {
         selectedSessionID = sessions.first?.id
         settings = AppPersistence.load(AppSettings.self, from: AppPersistence.settingsURL, default: .default)
         importedDocuments = AppPersistence.load([ImportedDocument].self, from: AppPersistence.documentsURL, default: [])
+        appLogs = AppPersistence.load([AppLogEntry].self, from: AppPersistence.appLogsURL, default: [])
         installedModels = scanInstalledModels()
         migrateLegacySelectedModelIDIfNeeded()
         registerDefaultTools()
         serverBaseURL = "http://\(settings.server.host):\(settings.server.port)"
+        addLog(category: "app", message: "Bootstrap complete. Runtime=\(settings.selectedRuntime.rawValue), models=\(installedModels.count)")
         await server.attach(appModel: self)
         if settings.server.autoStart {
             do { try await startServer() } catch { statusLine = error.localizedDescription }
@@ -94,6 +97,7 @@ final class AppModel: ObservableObject {
         sessions.insert(session, at: 0)
         selectedSessionID = session.id
         persistSessions()
+        addLog(category: "session", message: "Created new session \(session.id.uuidString.prefix(8))")
     }
 
     func deleteSession(_ session: ChatSession) {
@@ -102,6 +106,7 @@ final class AppModel: ObservableObject {
         if sessions.isEmpty { sessions = [ChatSession()] }
         if selectedSessionID == session.id { selectedSessionID = sessions.first?.id }
         persistSessions()
+        addLog(category: "session", message: "Deleted session \(session.id.uuidString.prefix(8))")
     }
 
     func pinSession(_ session: ChatSession) {
@@ -128,6 +133,7 @@ final class AppModel: ObservableObject {
         do {
             try AppPersistence.save(settings, to: AppPersistence.settingsURL)
             serverBaseURL = "http://\(settings.server.host):\(settings.server.port)"
+            addLog(category: "settings", message: "Saved settings")
         } catch { statusLine = error.localizedDescription }
     }
 
@@ -150,6 +156,7 @@ final class AppModel: ObservableObject {
             persistDocuments()
             statusLine = "Imported \(imported.count) file(s)"
             haptic(.success)
+            addLog(category: "documents", message: "Imported \(imported.count) file(s)")
         } catch { statusLine = error.localizedDescription }
     }
 
@@ -199,6 +206,7 @@ final class AppModel: ObservableObject {
             searchedModels = try await huggingFace.searchModels(query: searchQuery, token: settings.huggingFaceToken)
             selectedModelDetails = searchedModels.first
             statusLine = "Found \(searchedModels.count) model(s)"
+            addLog(category: "models", message: "Search '\(searchQuery)' -> \(searchedModels.count) result(s)")
         } catch { statusLine = error.localizedDescription }
     }
 
@@ -220,6 +228,7 @@ final class AppModel: ObservableObject {
             }
             statusLine = "Installed \(installed.filename)"
             haptic(.success)
+            addLog(category: "models", message: "Installed model \(installed.filename)")
         } catch { statusLine = error.localizedDescription }
     }
 
@@ -231,6 +240,7 @@ final class AppModel: ObservableObject {
             saveSettings()
         }
         haptic(.medium)
+        addLog(category: "models", message: "Uninstalled model \(model.filename)")
     }
 
     // MARK: - Send / Stop / Regenerate
@@ -257,6 +267,7 @@ final class AppModel: ObservableObject {
 
         generationTask = Task {
             do {
+                self.addLog(category: "chat", message: "Generation started (\(self.settings.selectedRuntime.rawValue))")
                 let stream = try self.conversationEngine.streamAgentResponse(
                     messages: messagesSnapshot,
                     settings: self.settings,
@@ -276,8 +287,10 @@ final class AppModel: ObservableObject {
                 self.statusLine = String(format: "%.1f tok/s", self.generationStats?.tokensPerSecond ?? 0)
                 self.persistSessions()
                 self.haptic(.success)
+                self.addLog(category: "chat", message: "Generation completed")
             } catch is CancellationError {
                 self.statusLine = "Stopped"
+                self.addLog(category: "chat", message: "Generation cancelled", level: .warning)
             } catch {
                 if let liveIndex = self.sessions.firstIndex(where: { $0.id == sessionID }),
                    let msgIndex = self.sessions[liveIndex].messages.firstIndex(where: { $0.id == assistantID }) {
@@ -287,6 +300,7 @@ final class AppModel: ObservableObject {
                 self.statusLine = error.localizedDescription
                 self.haptic(.error)
                 self.persistSessions()
+                self.addLog(category: "chat", message: "Generation error: \(error.localizedDescription)", level: .error)
             }
             self.isSending = false
         }
@@ -298,6 +312,7 @@ final class AppModel: ObservableObject {
         generationTask = nil
         isSending = false
         haptic(.light)
+        addLog(category: "chat", message: "Stop requested", level: .warning)
     }
 
     func regenerateLastResponse() async {
@@ -357,12 +372,14 @@ final class AppModel: ObservableObject {
         try await server.start(configuration: settings.server)
         isServerRunning = true
         statusLine = "Server listening on \(serverBaseURL)"
+        addLog(category: "server-control", message: "Server started at \(serverBaseURL)")
     }
 
     func stopServer() async {
         await server.stop()
         isServerRunning = false
         statusLine = "Server stopped"
+        addLog(category: "server-control", message: "Server stopped")
     }
 
     // MARK: - API (used by LocalAPIServer)
@@ -410,6 +427,30 @@ final class AppModel: ObservableObject {
 
     // MARK: - Private
 
+    func clearAppLogs() {
+        appLogs.removeAll()
+        persistLogs()
+        addLog(category: "app", message: "Logs cleared")
+    }
+
+    func exportLogsText() -> String {
+        appLogs.map { entry in
+            "[\(entry.timestamp.formatted(date: .abbreviated, time: .standard))] [\(entry.level.rawValue.uppercased())] [\(entry.category)] \(entry.message)"
+        }.joined(separator: "\n")
+    }
+
+    private func addLog(category: String, message: String, level: AppLogLevel = .info) {
+        appLogs.insert(AppLogEntry(level: level, category: category, message: message), at: 0)
+        if appLogs.count > 2000 {
+            appLogs = Array(appLogs.prefix(2000))
+        }
+        persistLogs()
+    }
+
+    private func persistLogs() {
+        try? AppPersistence.save(appLogs, to: AppPersistence.appLogsURL)
+    }
+
     private func consumeConversationEvents(
         _ stream: AsyncThrowingStream<ConversationEvent, Error>,
         sessionID: UUID,
@@ -430,12 +471,18 @@ final class AppModel: ObservableObject {
                         ChatMessage(role: .tool, content: "Running tool: \(name)")
                     )
                 }
+                self.addLog(category: "tools", message: "Tool started: \(name)")
             case .toolFinished(let name, let output, let isError):
                 if let liveIndex = self.sessions.firstIndex(where: { $0.id == sessionID }) {
                     self.sessions[liveIndex].messages.append(
                         ChatMessage(role: .tool, content: "[\(name)] \(output)", isError: isError)
                     )
                 }
+                self.addLog(
+                    category: "tools",
+                    message: "Tool finished: \(name)" + (isError ? " (error)" : ""),
+                    level: isError ? .error : .info
+                )
             }
         }
     }
