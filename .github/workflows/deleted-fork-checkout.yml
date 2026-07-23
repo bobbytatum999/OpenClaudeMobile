@@ -1,0 +1,69 @@
+name: Deleted Fork Checkout Guard Live Test
+
+on:
+  pull_request_target:
+    types:
+      - closed
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  deleted-fork-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Attempt protected checkout of retained PR head
+        id: protected_checkout
+        continue-on-error: true
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/head
+          persist-credentials: false
+          clean: true
+
+      - name: Record controlled result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECKOUT_OUTCOME: ${{ steps.protected_checkout.outcome }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          marker="$(cat bounty-marker.txt 2>/dev/null || true)"
+
+          if [[ "$CHECKOUT_OUTCOME" != "success" ]]; then
+            result="GUARD_BLOCKED_OR_REF_UNAVAILABLE"
+          elif [[ "$marker" == "GITHUB-BOUNTY-OWNED-DELETED-FORK-MARKER" ]]; then
+            result="POTENTIAL_DELETED_FORK_GUARD_BYPASS"
+          else
+            result="CHECKOUT_SUCCEEDED_WITHOUT_CONTROLLED_MARKER"
+          fi
+
+          echo "Result: $result" >> "$GITHUB_STEP_SUMMARY"
+          echo "Checkout outcome: $CHECKOUT_OUTCOME" >> "$GITHUB_STEP_SUMMARY"
+          echo "PR number: $PR_NUMBER" >> "$GITHUB_STEP_SUMMARY"
+          echo "Head repository field: ${HEAD_REPO:-<empty>}" >> "$GITHUB_STEP_SUMMARY"
+
+          title="Deleted-fork live result ${RUN_ID}: ${result}"
+          body="$(printf 'Controlled one-account test.\n\n- PR: #%s\n- checkout outcome: `%s`\n- event head repository: `%s`\n- result: **%s**\n\nNo fork code was executed, no secrets were used, and no response data was accessed.' \
+            "$PR_NUMBER" "$CHECKOUT_OUTCOME" "${HEAD_REPO:-<empty>}" "$result")"
+
+          payload="$(jq -n --arg title "$title" --arg body "$body" '{title: $title, body: $body}')"
+          curl --silent --show-error --fail \
+            --request POST \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --data "$payload" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues" \
+            >/dev/null
+
+          if [[ "$result" == "POTENTIAL_DELETED_FORK_GUARD_BYPASS" ]]; then
+            exit 2
+          fi
